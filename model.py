@@ -1,8 +1,8 @@
+import time
 import torch
 import torch.nn as nn
 import math
-import cvxpy as cvx
-from cvxpylayers.torch import CvxpyLayer
+from qpth.qp import QPFunction, QPSolvers
 
 T = torch.float32
 DEVICE = 'cuda'
@@ -38,123 +38,72 @@ class FourierLossWindow:
                 self.buckets[p] += loss / p
         return sparse_loss
 
+
+class QPLayer(nn.Module):
+
+    # TODO: add negative? Gz <= h && -Gz <= h
+    def __init__(self, feature_size=4):
+        super().__init__()
+        self.Q = torch.diag(torch.ones(feature_size, dtype=T)).to(DEVICE)
+        self.Z = torch.zeros(feature_size, feature_size, requires_grad=False, dtype=T).to(DEVICE)
+        self.z = torch.zeros(feature_size, requires_grad=False, dtype=T).to(DEVICE)
+        self.qpf = QPFunction(verbose=False, check_Q_spd=False, solver=QPSolvers.CVXPY, maxIter=200)
+
+    # A should be of size (hidden_size, feature_size)
+    # b should be of size (hidden_size,)
+    # layer solves Ax <= B (Gz <= h in the paper)
+    def forward(self, A, x, b):
+        return self.qpf(self.Q, -x, A, b, self.Z, self.z)
+
     
 class DriverModel(nn.Module):
 
-    def __init__(self):
-        import torchvision.models as models
+    def __init__(self, controller_input_size=4, hidden_size=8):
         super().__init__()
+        self.controller_input_size = controller_input_size
+        self.hidden_size = hidden_size
+        import torchvision.models as models
         self.rescale = nn.Conv2d(3, 3, (1, 2), dtype=T).to(DEVICE)
         self.vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).to(DEVICE)
         self.vgg.train()
-        self.vgg.classifier[-1] = nn.Linear(4096, 8, dtype=T).to(DEVICE)
-        self.rotation_matrix = nn.Linear(3+3, 8*8, dtype=T).to(DEVICE)
+        self.vgg.classifier[-1] = nn.Linear(4096, hidden_size, dtype=T).to(DEVICE)
+        self.rotation_matrix = nn.Linear(3+3, hidden_size * hidden_size, dtype=T).to(DEVICE)
         
-        self.learned_A = nn.Linear(8, 8*4, dtype=T).to(DEVICE)
-        self.learned_b = nn.Linear(8, 8, dtype=T).to(DEVICE)
+        self.learned_A = nn.Linear(hidden_size, hidden_size*controller_input_size, dtype=T).to(DEVICE)
+        self.learned_b = nn.Linear(hidden_size, hidden_size, dtype=T).to(DEVICE)
 
-        self.input = cvx.Parameter(4)
-
-        self.A = cvx.Parameter((8, 4))
-        self.b = cvx.Parameter(8)
-        self.x = cvx.Variable(4)
-
-        self.objective = cvx.Minimize(cvx.sum(cvx.abs(self.x - self.input)))
-        self.constraint = [self.A @ self.x <= self.b]
-        self.problem = cvx.Problem(self.objective, self.constraint)
-        self.cvx = CvxpyLayer(self.problem, parameters=[self.input, self.A, self.b], variables=[self.x]).to(DEVICE)
-        
-    # Needs a sort of producer & consumer paradigm
+        self.qp = QPLayer(controller_input_size).to(DEVICE)
+ 
+    # Should have a sort of producer & consumer paradigm
     # cvx needs to continuously produce controller input, while vgg can be updated once in awhile
     def forward(self, image, camera_direction, relative_velocity, controller_input):
 
         # Can take its time
         features = self.vgg(self.rescale(image))
         rotation_matrix = self.rotation_matrix(torch.cat((camera_direction, relative_velocity)))
-        rotated = rotation_matrix.reshape(8, 8) @ features.t()
+        rotated = rotation_matrix.reshape(self.hidden_size, self.hidden_size) @ features.t()
         rotated = nn.functional.relu(rotated)
+
         # Produce like crazy
-        A = self.learned_A(rotated.t()).reshape(8, 4)
+        A = self.learned_A(rotated.t()).reshape(self.hidden_size, self.controller_input_size)
+        A = torch.square(A)
         b = self.learned_b(rotated.t())
 
         a = time.time()
-        (y,) = self.cvx(controller_input, A, b, solver_args={'solve_method': 'SCS'})
+        (x,) = self.qp(A, controller_input, b)
         b = time.time()
         print(f'inner {b - a}')
 
-        return y
-    
+        return x
 
-class test(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.input = cvx.Parameter(4)
-
-        self.A = cvx.Parameter((8, 4))
-        self.b = cvx.Parameter(8)
-        self.x = cvx.Variable(4)
-
-        self.objective = cvx.Minimize(cvx.sum(cvx.abs(self.x - self.input)))
-        self.constraint = [self.A @ self.x <= self.b]
-        self.problem = cvx.Problem(self.objective, self.constraint)
-        self.cvx = CvxpyLayer(self.problem, parameters=[self.input, self.A, self.b], variables=[self.x]).to(DEVICE)
-
-    def forward(self, controller_input, A, b):
-        (y,) = self.cvx(controller_input, A, b, solver_args={'solve_method': 'Clarabel'})
-        return y
-    
-
-example_args = (torch.rand(4), torch.rand(8, 4), torch.rand(8))
-
-exported_program = torch.compile(
-    test()
-)
-
-print(exported_program(*example_args))
-
-exit()
-
-
-import time
 model = DriverModel()
-opt = torch.optim.Adam(model.parameters(), 1e-1)
 
-x, y, z, w = torch.rand(1, 3, 512, 512, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(4, dtype=T).to(DEVICE)
+while True:
 
-a = time.time()
-output = model(x, y, z, w)
-opt.zero_grad()
-output.sum().backward()
-opt.step()
-b = time.time()
-print(b - a)
+    image, camera_direction, relative_velocity, controller_input = torch.rand(1, 3, 512, 512).to(DEVICE), torch.rand(3).to(DEVICE), torch.rand(3).to(DEVICE), torch.rand(4).to(DEVICE)
 
-x, y, z, w = torch.rand(1, 3, 512, 512, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(4, dtype=T).to(DEVICE)
+    a = time.time()
+    model(image, camera_direction, relative_velocity, controller_input)
+    b = time.time()
+    print(b - a)
 
-a = time.time()
-output = model(x, y, z, w)
-opt.zero_grad()
-output.sum().backward()
-opt.step()
-b = time.time()
-print(b - a)
-
-x, y, z, w = torch.rand(1, 3, 512, 512, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(4, dtype=T).to(DEVICE)
-
-a = time.time()
-output = model(x, y, z, w)
-opt.zero_grad()
-output.sum().backward()
-opt.step()
-b = time.time()
-print(b - a)
-
-x, y, z, w = torch.rand(1, 3, 512, 512, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(4, dtype=T).to(DEVICE)
-
-a = time.time()
-output = model(x, y, z, w)
-opt.zero_grad()
-output.sum().backward()
-opt.step()
-b = time.time()
-print(b - a)
