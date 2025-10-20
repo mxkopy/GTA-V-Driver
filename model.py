@@ -64,9 +64,9 @@ class DriverModel(nn.Module):
         self.controller_input_size = controller_input_size
         self.hidden_size = hidden_size
         self.rescale = nn.Conv2d(3, 3, (1, 2), dtype=T).to(DEVICE)
-        self.vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).to(DEVICE)
-        self.vgg.train()
-        self.vgg.classifier[-1] = nn.Linear(4096, hidden_size, dtype=T).to(DEVICE)
+        self.visual = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT).to(DEVICE)
+        self.visual.train()
+        self.visual_adapter = nn.Linear(1000, hidden_size, dtype=T).to(DEVICE)
         self.rotation_matrix = nn.Linear(3+3, hidden_size * hidden_size, dtype=T).to(DEVICE)
         
         self.learned_A = nn.Linear(hidden_size, hidden_size*controller_input_size, dtype=T).to(DEVICE)
@@ -79,7 +79,7 @@ class DriverModel(nn.Module):
     def forward(self, image, camera_direction, relative_velocity, controller_input):
 
         # Can take its time
-        features = self.vgg(self.rescale(image))
+        features = self.visual_adapter(self.visual(self.rescale(image)))
         rotation_matrix = self.rotation_matrix(torch.cat((camera_direction, relative_velocity)))
         rotated = rotation_matrix.reshape(self.hidden_size, self.hidden_size) @ features.t()
         rotated = nn.functional.relu(rotated)
@@ -88,7 +88,6 @@ class DriverModel(nn.Module):
         A = self.learned_A(rotated.t()).reshape(self.hidden_size, self.controller_input_size)
         A = torch.abs(A)
         b = self.learned_b(rotated.t())
-        b = torch.abs(b)
 
         # a = time.time()
         (x,) = self.qp(A, controller_input, b)
