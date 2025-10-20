@@ -3,6 +3,9 @@ import torch
 import torch.nn as nn
 import math
 from qpth.qp import QPFunction, QPSolvers
+from torch.autograd import Variable
+import torchvision.models as models
+
 
 T = torch.float32
 DEVICE = 'cuda'
@@ -45,15 +48,13 @@ class QPLayer(nn.Module):
     def __init__(self, feature_size=4):
         super().__init__()
         self.Q = torch.diag(torch.ones(feature_size, dtype=T)).to(DEVICE)
-        self.Z = torch.zeros(feature_size, feature_size, requires_grad=False, dtype=T).to(DEVICE)
-        self.z = torch.zeros(feature_size, requires_grad=False, dtype=T).to(DEVICE)
         self.qpf = QPFunction(verbose=False, check_Q_spd=False, solver=QPSolvers.CVXPY, maxIter=200)
 
     # A should be of size (hidden_size, feature_size)
     # b should be of size (hidden_size,)
     # layer solves Ax <= B (Gz <= h in the paper)
     def forward(self, A, x, b):
-        return self.qpf(self.Q, -x, A, b, self.Z, self.z)
+        return self.qpf(self.Q, -x, A, b, Variable(torch.Tensor()), Variable(torch.Tensor()))
 
     
 class DriverModel(nn.Module):
@@ -62,7 +63,6 @@ class DriverModel(nn.Module):
         super().__init__()
         self.controller_input_size = controller_input_size
         self.hidden_size = hidden_size
-        import torchvision.models as models
         self.rescale = nn.Conv2d(3, 3, (1, 2), dtype=T).to(DEVICE)
         self.vgg = models.vgg16_bn(weights=models.VGG16_BN_Weights.DEFAULT).to(DEVICE)
         self.vgg.train()
@@ -86,24 +86,31 @@ class DriverModel(nn.Module):
 
         # Produce like crazy
         A = self.learned_A(rotated.t()).reshape(self.hidden_size, self.controller_input_size)
-        A = torch.square(A)
+        A = torch.abs(A)
         b = self.learned_b(rotated.t())
+        b = torch.abs(b)
 
-        a = time.time()
+        # a = time.time()
         (x,) = self.qp(A, controller_input, b)
-        b = time.time()
-        print(f'inner {b - a}')
+        # b = time.time()
+        # print(f'inner {b - a}')
 
         return x
 
 model = DriverModel()
+
+opt = torch.optim.Adam(model.parameters(), 1e-4)
 
 while True:
 
     image, camera_direction, relative_velocity, controller_input = torch.rand(1, 3, 512, 512).to(DEVICE), torch.rand(3).to(DEVICE), torch.rand(3).to(DEVICE), torch.rand(4).to(DEVICE)
 
     a = time.time()
-    model(image, camera_direction, relative_velocity, controller_input)
+    out = model(image, camera_direction, relative_velocity, controller_input)
+    loss = torch.sum(torch.square(out-controller_input))
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
     b = time.time()
     print(b - a)
 
