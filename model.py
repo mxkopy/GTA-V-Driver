@@ -1,15 +1,8 @@
-# pip install numpy scipy --extra-index-url https://urob.github.io/numpy-mkl
-import mkl
 import torch
 import torch.nn as nn
 import math
 import cvxpy as cvx
 from cvxpylayers.torch import CvxpyLayer
-
-
-# import numpy
-# numpy.show_config()
-# exit()
 
 T = torch.float32
 DEVICE = 'cuda'
@@ -85,11 +78,42 @@ class DriverModel(nn.Module):
         b = self.learned_b(rotated.t())
 
         a = time.time()
-        (y,) = self.cvx(controller_input, A, b, solver_args={'solve_method': 'Clarabel'})
+        (y,) = self.cvx(controller_input, A, b, solver_args={'solve_method': 'SCS'})
         b = time.time()
         print(f'inner {b - a}')
 
         return y
+    
+
+class test(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.input = cvx.Parameter(4)
+
+        self.A = cvx.Parameter((8, 4))
+        self.b = cvx.Parameter(8)
+        self.x = cvx.Variable(4)
+
+        self.objective = cvx.Minimize(cvx.sum(cvx.abs(self.x - self.input)))
+        self.constraint = [self.A @ self.x <= self.b]
+        self.problem = cvx.Problem(self.objective, self.constraint)
+        self.cvx = CvxpyLayer(self.problem, parameters=[self.input, self.A, self.b], variables=[self.x]).to(DEVICE)
+
+    def forward(self, controller_input, A, b):
+        (y,) = self.cvx(controller_input, A, b, solver_args={'solve_method': 'Clarabel'})
+        return y
+    
+
+example_args = (torch.rand(4), torch.rand(8, 4), torch.rand(8))
+
+exported_program = torch.compile(
+    test()
+)
+
+print(exported_program(*example_args))
+
+exit()
+
 
 import time
 model = DriverModel()
