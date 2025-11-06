@@ -9,31 +9,6 @@ import torchvision.models as models
 T = torch.float32
 DEVICE = 'cuda'
 
-
-class GradList:
-
-    def __init__(self, grads):
-        self.grads = grads
-    
-    def __iadd__(self, other):
-        for i in range(len(self.grads)):
-            self.grads[i] += other[i]
-        return self
-
-    def __add__(self, other):
-        return self.__iadd__(other)
-
-    def from_model_params(model):
-        return GradList([torch.zeros_like(parameter, requires_grad=False) for parameter in model.parameters()])
-
-    def to_model_grads(self, model):
-        for i, parameter in enumerate(model.parameters()):
-            parameter.grad = self.grads[i] if parameter.grad is None else parameter.grad + self.grads[i]
-
-    def zero(self):
-        for grad in self.grads:
-            grad.zero_()
-
 class FourierLossWindow:
     def primes(num):
         n = 13
@@ -47,20 +22,28 @@ class FourierLossWindow:
             n += 1
         return primes[0:num]
     
-    def __init__(self, model, n=1):
+    def __init__(self, model, n=128):
+        self.step = 0
         self.model = model
-        self.model_parameters = list(self.model.parameters())
-        self.distances = torch.tensor([2**i for i in range(n)], requires_grad=False).to(DEVICE, dtype=torch.int)
-        self.grads = [torch.expand_copy(parameter.unsqueeze(0), (n, *parameter.shape)).detach() for parameter in self.model.parameters()]
+        self.model_grads_vec = torch.nn.utils.parameters_to_vector(self.model.parameters()).to(device=DEVICE, dtype=T)
+        self.distances = torch.tensor([2**i for i in range(n)], requires_grad=False).to(device=DEVICE, dtype=torch.int)
+        # self.distances = torch.tensor(FourierLossWindow.primes(n), requires_grad=False).to(device=DEVICE, dtype=torch.int)
+        self.grads = torch.zeros(n, torch.nn.utils.parameters_to_vector(model.parameters()).numel()).to(device=DEVICE, dtype=T)
 
-    def add_loss(self, loss, step):
-        for p in range(len(self.grads)):
-            self.grads[p] *= (step % self.distances != 0).view(-1, *(1 for _ in self.grads[p].shape[1:])).expand(*self.grads[p].shape)
-            self.grads[p] += torch.stack(torch.autograd.grad([loss / d.float() for d in self.distances], self.model_parameters[p], retain_graph=True, materialize_grads=True))
-            if self.model_parameters[p].grad is None:
-                self.model_parameters[p].grad = torch.sum(self.grads[p] * (step % self.distances == 0).view(-1, *(1 for _ in self.grads[p].shape[1:])).expand(*self.grads[p].shape), dim=0)
-            else:
-                self.model_parameters[p].grad += torch.sum(self.grads[p] * (step % self.distances == 0).view(-1, *(1 for _ in self.grads[p].shape[1:])).expand(*self.grads[p].shape), dim=0)
+    def backward(self):
+        # Assign parameter grads for vectorized use
+        idx = 0
+        for parameter in self.model.parameters():
+            numel = parameter.numel()
+            self.model_grads_vec[idx:idx+numel] = parameter.grad.view(-1)
+            idx += numel
+        # Update grad windows, reassign grads & such
+        self.step = (self.step+1) % self.distances[-1]
+        eq_zero, neq_zero = (self.step % self.distances) == 0, (self.step % self.distances) != 0
+        self.grads += self.model_grads_vec.unsqueeze(0) / self.distances.unsqueeze(1)
+        model_grads = [parameter.grad for parameter in self.model.parameters()]
+        torch.nn.utils.vector_to_parameters(self.grads.sum(dim=0), model_grads)
+        self.grads *= neq_zero.unsqueeze(1)
 
 class QPLayer(nn.Module):
 
@@ -82,63 +65,63 @@ class QPLayer(nn.Module):
         return (y[0:4] + y[4:]) / 2
 
 
-class DriverModel(nn.Module):
+class DriverModelBase(nn.Module):
 
-    def __init__(self, controller_input_size=4, hidden_size=8):
+    def __init__(self, controller_input_size=4):
         super().__init__()
         self.controller_input_size = controller_input_size
-        self.hidden_size = hidden_size
-        self.rescale = nn.Conv2d(3, 3, (1, 2), dtype=T).to(DEVICE)
-        self.visual = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT).to(DEVICE, dtype=T)
+        self.rescale = nn.Conv2d(3, 3, (1, 2)).to(device=DEVICE, dtype=T)
+        self.visual = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT).to(device=DEVICE, dtype=T)
         self.visual.train()
-        self.visual_adapter = nn.Linear(1000, hidden_size, dtype=T).to(DEVICE)
-        self.rotation_matrix = nn.Linear(3+3, hidden_size * hidden_size, dtype=T).to(DEVICE)
-        
-        self.learned_A = nn.Linear(hidden_size, hidden_size*controller_input_size, dtype=T).to(DEVICE)
-        self.learned_b = nn.Linear(hidden_size, hidden_size, dtype=T).to(DEVICE)
-
-        self.qp = QPLayer(controller_input_size).to(DEVICE)
+        self.rotation_matrix = nn.Linear(3, controller_input_size * controller_input_size).to(device=DEVICE, dtype=T)
+        self.pre_collate = nn.Sequential(
+            nn.Linear(1000 + 3 + self.controller_input_size, 1000 + 3 + self.controller_input_size),
+            nn.ELU(),
+        ).to(device=DEVICE, dtype=T)
+        self.collate = nn.Linear(1000 + 3 + self.controller_input_size, self.controller_input_size).to(device=DEVICE, dtype=T)
  
-    # Should have a sort of producer & consumer paradigm
-    # cvx needs to continuously produce controller input, while vgg can be updated once in awhile
-    def forward(self, image, camera_direction, relative_velocity, controller_input):
+    def forward(self, IMG, INP, CAM, VEL):
+        IMG_FEATURES = self.visual(self.rescale(IMG)).squeeze()
+        ROTATED_CONTROLLER_INPUTS = self.rotation_matrix(CAM).reshape(self.controller_input_size, self.controller_input_size)
+        X = torch.cat((IMG_FEATURES, VEL, ROTATED_CONTROLLER_INPUTS @ INP))
+        Y = self.pre_collate(X)
+        Y = self.collate(Y) @ ROTATED_CONTROLLER_INPUTS.t()
+        return IMG_FEATURES, ROTATED_CONTROLLER_INPUTS, X, Y
 
-        # Can take its time
-        features = self.visual_adapter(self.visual(self.rescale(image)))
-        rotation_matrix = self.rotation_matrix(torch.cat((camera_direction, relative_velocity)))
-        rotated = rotation_matrix.reshape(self.hidden_size, self.hidden_size) @ features.t()
-        rotated = nn.functional.relu(rotated)
+# State -> Action
+class DriverActorModel(DriverModelBase):
 
-        # Produce like crazy
-        A = self.learned_A(rotated.t()).reshape(self.hidden_size, self.controller_input_size)
-        A = torch.abs(A)
-        b = self.learned_b(rotated.t())
+    def __init__(self, **kwargs):
+        import copy
+        super().__init__(**kwargs)
+        self.pre_collate_P = copy.deepcopy(self.pre_collate).to(self.pre_collate).to(device=DEVICE, dtype=T)
+        self.collate_P = self.collate.__class__(self.collate.in_features, 1)
 
-        x = self.qp(A, controller_input, b)
+    def forward(self, IMG, INP, CAM, VEL):
+        IMG_FEATURES, ROTATED_CONTROLLER_INPUTS, X, COLLISION_AVOIDANCE = super().forward(IMG, INP, CAM, VEL)
+        COLLISION_PROBABILITY = self.pre_collate_P(X)
+        COLLISION_PROBABILITY = self.collate_P(COLLISION_PROBABILITY)
+        COLLISION_PROBABILITY = nn.functional.sigmoid(COLLISION_PROBABILITY)
+        COLLISION_AVOIDANCE_JOYSTICK = nn.functional.tanh(COLLISION_AVOIDANCE[:2])
+        COLLISION_AVOIDANCE_TRIGGERS = nn.functional.sigmoid(COLLISION_AVOIDANCE[2:])
+        COLLISION_AVOIDANCE = torch.cat((COLLISION_AVOIDANCE_JOYSTICK, COLLISION_AVOIDANCE_TRIGGERS))
+        return (INP * (1 - COLLISION_PROBABILITY)) + (COLLISION_PROBABILITY * COLLISION_AVOIDANCE)
 
-        xy, triggers = torch.clamp(x[0:2], min=-1, max=1), torch.clamp(x[2:4], min=0, max=1)
+# State, Action -> QValue
+# 
+# This model should predict how useful the collision avoidance guidance is. 
+# Realistically, it can just predict how (un)likely a crash is going to happen given state & user input, 
+# where 'user input' is the collision guidance from the actor model.
+# 
+# There might be a way to finagle this functionality just from P in the actor model. 
+class DriverCriticModel(DriverModelBase):
 
-        return torch.cat((xy, triggers))
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.post_collate = nn.Linear(self.collate.out_features, 1)
 
-# model = DriverModel()
-# opt = torch.optim.Adam(model.parameters(), 1e-4)
-# losswindow = FourierLossWindow(model)
-# # step = 1
-# while True:
-
-#     image, camera_direction, relative_velocity, controller_input = torch.ones(1, 3, 512, 512, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(3, dtype=T).to(DEVICE), torch.rand(4, dtype=T).to(DEVICE)
-
-#     a = time.time()
-#     out = model(image, camera_direction, relative_velocity, controller_input)
-#     mse_loss = torch.nn.functional.mse_loss(out, controller_input)
-#     # losswindow.add_loss(mse_loss, step)
-#     mse_loss.backward()
-#     opt.step()
-#     opt.zero_grad()
-#     b = time.time()
-#     print(f'{b - a}')
-#     # print(mse_loss.item())
-#     # step += 1
-
-
-
+    def forward(self, IMG, _, CAM, VEL, ACT):
+        _, _, _, Y = super().forward(IMG, ACT, CAM, VEL)
+        Y = nn.functional.elu(Y)
+        Q = self.post_collate(Y)
+        return Q

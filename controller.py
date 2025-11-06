@@ -6,13 +6,10 @@ import mss
 from time import sleep
 import torch
 import torchvision.io
-from model import DriverModel, T, DEVICE
+import random
+import copy
+from model import DriverActorModel, DriverCriticModel, T, DEVICE
 from PIL import Image
-
-
-ACK_DAM_END = 1
-CAM_END = 13
-VEL_END = 25
 
 X2VIG = {
     xinput.BUTTON_DPAD_DOWN: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
@@ -33,10 +30,9 @@ class ControllerHandler(xinput.EventHandler):
         super().__init__(controller)
         self.set_filter(xinput.FILTER_NONE)
         self.output_pad = vg.VX360Gamepad()
-        self.ipc = mmap.mmap(-1, VEL_END, 'ipc.mem')
         self.lp_model = lp_model
-        self.move_inputs   = [0.0, 0.0, 0.0, 0.0]
-        self.move_computed = [None, None, None, None]
+        self.move_inputs = [0.0, 0.0, 0.0, 0.0]
+        self.action = [None, None, None, None]
         
     def process_button_event(self, event):
         if event.type == xinput.EVENT_BUTTON_PRESSED:
@@ -50,23 +46,23 @@ class ControllerHandler(xinput.EventHandler):
             self.move_inputs[2] = event.value
         if event.trigger == xinput.RIGHT:
             self.move_inputs[3] = event.value
-        if self.move_computed[2] is not None:
-            self.output_pad.left_trigger_float(self.move_computed[2])
-            self.move_computed[2] = None
+        if self.action[2] is not None:
+            self.output_pad.left_trigger_float(self.action[2])
+            self.action[2] = None
             self.output_pad.update()
-        if self.move_computed[3] is not None:
-            self.output_pad.right_trigger_float(self.move_computed[3])
-            self.move_computed[3] = None
+        if self.action[3] is not None:
+            self.output_pad.right_trigger_float(self.action[3])
+            self.action[3] = None
             self.output_pad.update()
 
     def process_stick_event(self, event):
         if event.stick == xinput.LEFT:
             self.move_inputs[0] = event.x
             self.move_inputs[1] = event.y
-            if self.move_computed[0] is not None and self.move_computed[1] is not None:
-                self.output_pad.left_joystick_float(self.move_computed[0], self.move_computed[1])
-                self.move_computed[0] = None
-                self.move_computed[1] = None
+            if self.action[0] is not None and self.action[1] is not None:
+                self.output_pad.left_joystick_float(self.action[0], self.action[1])
+                self.action[0] = None
+                self.action[1] = None
                 self.output_pad.update()
         if event.stick == xinput.RIGHT:
             self.output_pad.right_joystick_float(event.x, event.y)
@@ -75,43 +71,121 @@ class ControllerHandler(xinput.EventHandler):
     def process_connection_event(self, event):
         pass
 
-torch.cuda.empty_cache()
-model = DriverModel().to(DEVICE, T)
-opt = torch.optim.Adam(model.parameters(), 1e-4)
-ipc = mmap.mmap(-1, VEL_END, "ipc.mem")
-gamepad = ControllerHandler()
-xinput.GamepadThread(gamepad)
-relu = lambda x: x * (x > 0)
 
-while True:
-    ipc.seek(0)
-    ACK_DAM = ipc.read_byte()
-    if 1 & ACK_DAM:
+ACK_END = 1
+CAM_END = 13
+VEL_END = 25
+DMG_END = 29
+
+class Environment:
+
+    def __init__(self, IPC_BYTES=VEL_END):
+        self.ipc = mmap.mmap(-1, IPC_BYTES, "ipc.mem")
+        self.gamepad = ControllerHandler()
+        xinput.GamepadThread(self.gamepad)
+    
+    def observe(self):
+        while not 1 & self.ipc.read_byte():
+            self.ipc.seek(0)
+        self.ipc.seek(0)
+        PCKT = self.ipc.read_byte() + self.ipc.read(DMG_END - ACK_END)
+        CAM = struct.unpack('<3f', PCKT[ACK_END:CAM_END])
+        VEL = struct.unpack('<3f', PCKT[CAM_END:VEL_END])
+        DMG = struct.unpack('I', PCKT[VEL_END:DMG_END])
+        REW = 1 if DMG == 0 else -100
+        IMG, INP, CAM, VEL, REW = [self.grab_screenshot()] + [torch.tensor(x, dtype=T, device=DEVICE) for x in (self.gamepad.move_inputs, CAM, VEL, REW)]
+        return IMG, INP, CAM, VEL, REW
+
+    def act(self, action):
+        self.gamepad.action = action.detach().clone().tolist()
+        self.ipc.seek(0)
+        self.ipc.write_byte(0)
+
+    def grab_screenshot(self):
         with mss.mss() as sct:
-            PCKT = ACK_DAM.to_bytes() + ipc.read(VEL_END - ACK_DAM_END)
-            DMG = ACK_DAM >> 1
-            CAM = struct.unpack('<3f', PCKT[ACK_DAM_END:CAM_END])
-            VEL = struct.unpack('<3f', PCKT[CAM_END:VEL_END])
             img = sct.grab(sct.monitors[1])
             img = Image.frombytes("RGB", img.size, img.rgb)
-            IMG = torchvision.transforms.functional.pil_to_tensor(img).to(device=DEVICE, dtype=T).unsqueeze(0)
-            MVE = gamepad.move_inputs
-            CAM, VEL, MVE = [torch.tensor(x, dtype=T, device=DEVICE) for x in (CAM, VEL, MVE)]
-            output = model(IMG, CAM, VEL, MVE)
-            loss = torch.nn.functional.mse_loss(output, torch.tensor(gamepad.move_inputs, device=DEVICE, dtype=T))
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            # print(loss.item())
-            gamepad.move_computed = output.detach().clone().tolist()
-            ipc.seek(0)
-            ipc.write_byte(0)
+            return torchvision.transforms.functional.pil_to_tensor(img).to(device=DEVICE, dtype=T)
 
-# while True:
-    # sleep(0.01)
+torch.cuda.empty_cache()
 
-# my_handler = MyHandler(1)
-# my_gamepad_thread = xinput.GamepadThread(my_handler)
-# my_gamepad_thread.start()
-# while True:
-    # pass
+actor = DriverActorModel().to(DEVICE, T)
+critic = DriverCriticModel().to(DEVICE, T)
+
+actor_target = copy.deepcopy(actor).to(DEVICE, T)
+critic_target = copy.deepcopy(critic).to(DEVICE, T)
+
+actor_opt = torch.optim.Adam(actor.parameters(), 1e-2)
+critic_opt = torch.optim.Adam(critic.parameters(), 1e-2)
+
+ENV = Environment()
+
+GAMMA = 0.50
+POLYAK = 0.90
+N_TRANSITIONS = 600
+BATCH_SIZE = 100
+
+HEAD = 0
+TAIL = 0
+
+# State: (IMG, CAM, VEL, INP)
+# S  -> BUFFER[0, ...]
+# S' -> BUFFER[1, ...]
+IMG_BUFFER = torch.zeros(2, N_TRANSITIONS, *ENV.grab_screenshot().shape, dtype=T, device=DEVICE)
+CAM_BUFFER = torch.zeros(2, N_TRANSITIONS, 3, dtype=T, device=DEVICE)
+VEL_BUFFER = torch.zeros(2, N_TRANSITIONS, 3, dtype=T, device=DEVICE)
+INP_BUFFER = torch.zeros(2, N_TRANSITIONS, 4, dtype=T, device=DEVICE)
+
+# Action: ~INP
+ACT_BUFFER = torch.zeros(N_TRANSITIONS, 4, dtype=T, device=DEVICE)
+
+# Reward: f(DMG)
+REW_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
+
+# Final flag: {0, 1}
+FIN_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
+
+while True:
+    with torch.no_grad():
+        IMG, INP, CAM, VEL, REW = ENV.observe()
+        FIN = REW != 1
+        IMG_BUFFER[0, TAIL, ...], INP_BUFFER[0, TAIL, ...], CAM_BUFFER[0, TAIL, ...], VEL_BUFFER[0, TAIL, ...], FIN_BUFFER[TAIL] = IMG, INP, CAM, VEL, FIN
+        ACT = actor(IMG, INP, CAM, VEL)
+        ENV.act(ACT)
+        ACT_BUFFER[TAIL, ...] = ACT
+        IMG, INP, CAM, VEL, REW = ENV.observe()
+        IMG_BUFFER[1, TAIL, ...], INP_BUFFER[1, TAIL, ...], CAM_BUFFER[1, TAIL, ...], VEL_BUFFER[1, TAIL, ...], REW_BUFFER[TAIL] = IMG, INP, CAM, VEL, REW
+        TAIL = (TAIL+1) % N_TRANSITIONS
+        HEAD = (TAIL+1) % N_TRANSITIONS if HEAD == TAIL else HEAD
+
+    if FIN:
+        if TAIL == HEAD:
+            IDX = list(range(N_TRANSITIONS))
+        elif TAIL < HEAD:
+            IDX = list(range(HEAD, N_TRANSITIONS)) + list(range(0, TAIL+1))
+        elif HEAD < TAIL:
+            IDX = list(range(HEAD, TAIL+1))
+        HEAD = 0
+        TAIL = 0
+        SAMPLE = random.sample(IDX, BATCH_SIZE)
+        IMG, INP, CAM, VEL = [BUFFER[:, SAMPLE, ...] for BUFFER in (IMG_BUFFER, INP_BUFFER, CAM_BUFFER, VEL_BUFFER)]
+        ACT, FIN, REW      = ACT_BUFFER[SAMPLE, ...], FIN_BUFFER[SAMPLE], REW_BUFFER[SAMPLE]
+
+        STATE      = IMG[0, :, ...].squeeze(), INP[0, :, ...].squeeze(), CAM[0, :, ...].squeeze(), VEL[0, :, ...].squeeze()
+        NEXT_STATE = IMG[1, :, ...].squeeze(), INP[1, :, ...].squeeze(), CAM[1, :, ...].squeeze(), VEL[1, :, ...].squeeze()
+
+        ACT_T  = actor_target(*NEXT_STATE)
+        CRT_T  = critic_target(*NEXT_STATE, ACT_T)
+        TARGET = REW + GAMMA * (1 - FIN.unsqueeze(1)) * ACT_T.unsqueeze(0)
+
+        critic_opt.zero_grad()
+        CRIT_LOSS = (critic(*STATE, ACT[:, ...].squeeze()) - TARGET).square().sum() / BATCH_SIZE
+        CRIT_LOSS.backward()
+        torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
+        critic_opt.step()
+
+        actor_opt.zero_grad()
+        ACTOR_LOSS = -critic(*STATE, actor(*STATE)).sum() / BATCH_SIZE
+        ACTOR_LOSS.backward()
+        torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+        actor_opt.step()

@@ -26,9 +26,10 @@ using System.Windows.Forms;
 
 public enum GAME_PCKT
 {
-    ACK_DMG_END = 1,
+    ACK_END = 1,
     CAM_END = 13,
     VEL_END = 25,
+    DMG_END = 29,
 }
 
 public class GTAVDriver : Script
@@ -53,13 +54,14 @@ public class GTAVDriver : Script
 
         if (V != null)
         {
-            byte DMG = LastVHealth > 0 && LastVHealth > V.Health ? (byte) 1 : (byte) 0;
-            LastVHealth = V.Health;
             float[] CAM = GameplayCamera.Direction.Normalized.ToArray();
             float[] VEL = Vector3.Project(V.Velocity, GameplayCamera.Direction.Normalized).ToArray();
-            accessor.WriteArray<float>((long) GAME_PCKT.ACK_DMG_END, CAM, 0, 3);
+            Int16 DMG = LastVHealth > 0 && LastVHealth > V.Health ? LastVHealth - V.Health : 0;
+            LastVHealth = V.Health;
+            accessor.WriteArray<float>((long) GAME_PCKT.ACK_END, CAM, 0, 3);
             accessor.WriteArray<float>((long) GAME_PCKT.CAM_END, VEL, 0, 3);
-            accessor.Write(0, (DMG << 1) ^ 1);
+            accessor.Write<Int32>((long) GAME_PCKT.VEL_END, DMG);
+            accessor.Write(0, 1);
             accessor.Flush();
             while (accessor.ReadByte(0) == 0) ;
         }
