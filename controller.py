@@ -189,3 +189,6 @@ while True:
         ACTOR_LOSS.backward()
         torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
         actor_opt.step()
+
+        torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(actor.parameters()), actor_target.parameters())
+        torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(critic.parameters()), critic_target.parameters())
