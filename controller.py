@@ -126,8 +126,8 @@ critic_opt = torch.optim.Adam(critic.parameters(), 1e-2)
 
 ENV = Environment()
 
-GAMMA = 0.50
-POLYAK = 0.90
+GAMMA = 0.990
+POLYAK = 0.995
 N_TRANSITIONS = 600
 BATCH_SIZE = 4
 N_UPDATES = 100
@@ -195,7 +195,7 @@ while True:
             # Get 'best estimate' from target networks
             ACT_T  = actor_target(*NEXT_STATE)
             CRT_T  = critic_target(*NEXT_STATE, ACT_T)
-            TARGET = REW + GAMMA * (1 - FIN.unsqueeze(1)) * ACT_T.unsqueeze(0)
+            TARGET = REW + GAMMA * (1 - FIN) * CRT_T
 
             # Update critic against best estimate via gradient descent
             critic_opt.zero_grad()
