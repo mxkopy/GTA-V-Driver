@@ -22,6 +22,10 @@ X2VIG = {
     xinput.BUTTON_Y: vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
 }
 
+
+# TODO: synchronize this stuff with the environment. 
+# Ideally the game waits for an action, and the actor polls game & input state as needed.
+# Should provide the actor with the last state & input recorded before it starts processing. 
 class ControllerHandler(xinput.EventHandler):
 
     def __init__(self, lp_model=None):
@@ -109,6 +113,8 @@ class Environment:
 
 torch.cuda.empty_cache()
 
+# Implements https://spinningup.openai.com/en/latest/algorithms/ddpg.html
+
 actor = DriverActorModel().to(DEVICE, T)
 critic = DriverCriticModel().to(DEVICE, T)
 
@@ -123,7 +129,8 @@ ENV = Environment()
 GAMMA = 0.50
 POLYAK = 0.90
 N_TRANSITIONS = 600
-BATCH_SIZE = 100
+BATCH_SIZE = 4
+N_UPDATES = 100
 
 HEAD = 0
 TAIL = 0
@@ -146,6 +153,7 @@ REW_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
 FIN_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
 
 while True:
+    # Interact with the environment using actor network
     with torch.no_grad():
         IMG, INP, CAM, VEL, REW = ENV.observe()
         FIN = REW != 1
@@ -158,7 +166,10 @@ while True:
         TAIL = (TAIL+1) % N_TRANSITIONS
         HEAD = (TAIL+1) % N_TRANSITIONS if HEAD == TAIL else HEAD
 
+    # If the interaction episode is over, update the models
     if FIN:
+
+        # Calculate indices population for circular buffer
         if TAIL == HEAD:
             IDX = list(range(N_TRANSITIONS))
         elif TAIL < HEAD:
@@ -167,28 +178,43 @@ while True:
             IDX = list(range(HEAD, TAIL+1))
         HEAD = 0
         TAIL = 0
-        SAMPLE = random.sample(IDX, BATCH_SIZE)
-        IMG, INP, CAM, VEL = [BUFFER[:, SAMPLE, ...] for BUFFER in (IMG_BUFFER, INP_BUFFER, CAM_BUFFER, VEL_BUFFER)]
-        ACT, FIN, REW      = ACT_BUFFER[SAMPLE, ...], FIN_BUFFER[SAMPLE], REW_BUFFER[SAMPLE]
 
-        STATE      = IMG[0, :, ...].squeeze(), INP[0, :, ...].squeeze(), CAM[0, :, ...].squeeze(), VEL[0, :, ...].squeeze()
-        NEXT_STATE = IMG[1, :, ...].squeeze(), INP[1, :, ...].squeeze(), CAM[1, :, ...].squeeze(), VEL[1, :, ...].squeeze()
+        # TODO: For this application, sampling randomly is kind of an interesting strategy. It might make more sense to sample
+        # contiguous chunks of time instead. 
+        for n in N_UPDATES:
 
-        ACT_T  = actor_target(*NEXT_STATE)
-        CRT_T  = critic_target(*NEXT_STATE, ACT_T)
-        TARGET = REW + GAMMA * (1 - FIN.unsqueeze(1)) * ACT_T.unsqueeze(0)
+            # Sample indices from circular buffer
+            SAMPLE = random.sample(IDX, BATCH_SIZE)
 
-        critic_opt.zero_grad()
-        CRIT_LOSS = (critic(*STATE, ACT[:, ...].squeeze()) - TARGET).square().sum() / BATCH_SIZE
-        CRIT_LOSS.backward()
-        torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
-        critic_opt.step()
+            IMG, INP, CAM, VEL = [BUFFER[:, SAMPLE, ...] for BUFFER in (IMG_BUFFER, INP_BUFFER, CAM_BUFFER, VEL_BUFFER)]
+            ACT, FIN, REW      = ACT_BUFFER[SAMPLE, ...], FIN_BUFFER[SAMPLE], REW_BUFFER[SAMPLE]
 
-        actor_opt.zero_grad()
-        ACTOR_LOSS = -critic(*STATE, actor(*STATE)).sum() / BATCH_SIZE
-        ACTOR_LOSS.backward()
-        torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
-        actor_opt.step()
+            STATE      = IMG[0, :, ...].squeeze(), INP[0, :, ...].squeeze(), CAM[0, :, ...].squeeze(), VEL[0, :, ...].squeeze()
+            NEXT_STATE = IMG[1, :, ...].squeeze(), INP[1, :, ...].squeeze(), CAM[1, :, ...].squeeze(), VEL[1, :, ...].squeeze()
 
-        torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(actor.parameters()), actor_target.parameters())
-        torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(critic.parameters()), critic_target.parameters())
+            # Get 'best estimate' from target networks
+            ACT_T  = actor_target(*NEXT_STATE)
+            CRT_T  = critic_target(*NEXT_STATE, ACT_T)
+            TARGET = REW + GAMMA * (1 - FIN.unsqueeze(1)) * ACT_T.unsqueeze(0)
+
+            # Update critic against best estimate via gradient descent
+            critic_opt.zero_grad()
+            CRIT_LOSS = (critic(*STATE, ACT[:, ...].squeeze()) - TARGET).square().sum() / BATCH_SIZE
+            CRIT_LOSS.backward()
+            torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
+            critic_opt.step()
+
+            # Update actor against best estimate via gradient ascent
+            actor_opt.zero_grad()
+            ACTOR_LOSS = -critic(*STATE, actor(*STATE)).sum() / BATCH_SIZE
+            ACTOR_LOSS.backward()
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+            actor_opt.step()
+
+            # Update target network parameters
+            ACTOR_PARAMS    = torch.nn.utils.parameters_to_vector(actor.parameters())
+            CRITIC_PARAMS   = torch.nn.utils.parameters_to_vector(critic.parameters())
+            ACTOR_T_PARAMS  = torch.nn.utils.parameters_to_vector(actor_target.parameters())
+            CRITIC_T_PARAMS = torch.nn.utils.parameters_to_vector(critic_target.parameters())
+            torch.nn.utils.vector_to_parameters((ACTOR_T_PARAMS * POLYAK) + (1 - POLYAK) * ACTOR_PARAMS, actor_target.parameters())
+            torch.nn.utils.vector_to_parameters((CRITIC_T_PARAMS * POLYAK) + (1 - POLYAK) * CRITIC_PARAMS, critic_target.parameters())

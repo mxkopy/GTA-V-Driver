@@ -113,7 +113,7 @@ class DriverActorModel(DriverModelBase):
 # Realistically, it can just predict how (un)likely a crash is going to happen given state & user input, 
 # where 'user input' is the collision guidance from the actor model.
 # 
-# There might be a way to finagle this functionality just from P in the actor model. 
+# TODO: there might be a way to finagle this functionality just from P in the actor model. 
 class DriverCriticModel(DriverModelBase):
 
     def __init__(self, **kwargs):
