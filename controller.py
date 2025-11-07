@@ -94,7 +94,7 @@ class Environment:
     def observe(self):
         return [self.grab_screenshot()] + [torch.zeros(1, 4, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.tensor([1], dtype=T, device=DEVICE) if torch.rand(1) < 0.9 else torch.tensor([-100], dtype=T, device=DEVICE)]
 
-    def _observe(self):
+    def observe_base(self):
         while not 1 & self.ipc.read_byte():
             self.ipc.seek(0)
         self.ipc.seek(0)
@@ -105,11 +105,19 @@ class Environment:
         REW = 1 if DMG == 0 else -100
         IMG, INP, CAM, VEL, REW = [self.grab_screenshot()] + [torch.tensor(x, dtype=T, device=DEVICE) for x in (self.gamepad.move_inputs, CAM, VEL, REW)]
         return IMG, INP, CAM, VEL, REW
+    
+    def observe(self):
+        *S, FIN = self.observe_base()
+        # This a rollie not a stop watch
+        # Shit don't ever stop
+        return *S, 0
 
     def act(self, action):
         self.gamepad.action = action.tolist()
         self.ipc.seek(0)
         self.ipc.write_byte(0)
+        # TODO: spin on game update
+        return self.observe_base()
 
     def grab_screenshot(self):
         with mss.mss() as sct:
@@ -194,16 +202,15 @@ import time
 while True:
     # Interact with the environment using actor network
     with torch.no_grad():
-        *S, _REW = ENV.observe()
-        FIN = 0 if _REW == 1 else 1
-
         a = time.time()
-        A = actor(*S)
-        ENV.act(A)
-        b = time.time()
 
-        *NS, REW = ENV.observe()        
+        *S, FIN = ENV.observe()
+        A = actor(*S)
+        *NS, REW = ENV.act(A)
+
         buffer += Transition(S, A, NS, REW)
+        
+        b = time.time()
         print(b - a)
         
     # If the interaction episode is over, update the models
