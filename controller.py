@@ -10,6 +10,8 @@ import random
 import copy
 from model import DriverActorModel, DriverCriticModel, T, DEVICE
 from PIL import Image
+from collections import namedtuple
+
 
 X2VIG = {
     xinput.BUTTON_DPAD_DOWN: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
@@ -83,12 +85,16 @@ DMG_END = 29
 
 class Environment:
 
-    def __init__(self, IPC_BYTES=VEL_END):
+    def __init__(self, IPC_BYTES=VEL_END, resolution=(720, 1280)):
         self.ipc = mmap.mmap(-1, IPC_BYTES, "ipc.mem")
         self.gamepad = ControllerHandler()
+        self.resolution = resolution
         xinput.GamepadThread(self.gamepad)
     
     def observe(self):
+        return [self.grab_screenshot()] + [torch.zeros(1, 4, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.tensor([1], dtype=T, device=DEVICE) if torch.rand(1) < 0.9 else torch.tensor([-100], dtype=T, device=DEVICE)]
+
+    def _observe(self):
         while not 1 & self.ipc.read_byte():
             self.ipc.seek(0)
         self.ipc.seek(0)
@@ -101,7 +107,7 @@ class Environment:
         return IMG, INP, CAM, VEL, REW
 
     def act(self, action):
-        self.gamepad.action = action.detach().clone().tolist()
+        self.gamepad.action = action.tolist()
         self.ipc.seek(0)
         self.ipc.write_byte(0)
 
@@ -109,17 +115,67 @@ class Environment:
         with mss.mss() as sct:
             img = sct.grab(sct.monitors[1])
             img = Image.frombytes("RGB", img.size, img.rgb)
-            return torchvision.transforms.functional.pil_to_tensor(img).to(device=DEVICE, dtype=T)
+            img = img.resize(self.resolution)
+            return torchvision.transforms.functional.pil_to_tensor(img).to(device=DEVICE, dtype=T).unsqueeze(0)
+
+
+Transition = namedtuple('Transition', ('S', 'A', 'NS', 'R'))
+
+class CircularReplayBuffer:
+
+    def __init__(self, N=300):
+        self.N = N
+        self.buffer = [None for _ in range(N)]
+        self.head = 0
+        self.tail = 0
+
+    def __iadd__(self, transition: Transition):
+        self.buffer[self.tail] = transition
+        self.tail = (self.tail+1) % self.N
+        self.head = (self.tail+1) % self.N if self.head == self.tail else self.head
+        return self
+
+    def __getitem__(self, key):
+        return self.buffer[key]
+    
+    def __setitem__(self, key, value):
+        self.buffer[key] = value
+
+    def add(self, transition: Transition):
+        self += transition
+
+    # TODO: For this application, sampling randomly is kind of an interesting strategy. It might make more sense to sample
+    # contiguous chunks of time instead.
+    def sample(self, n):
+        transitions = random.sample(list(filter(None, self.buffer)), n)
+        batch = transitions[0]._asdict()
+        batch['S'] = list(batch['S'])
+        batch['NS'] = list(batch['NS'])
+        for transition in transitions[1:]:
+            for i in range(len(batch['S'])):
+                batch['S'][i] = torch.cat((batch['S'][i], transition.S[i]))
+                batch['NS'][i] = torch.cat((batch['NS'][i], transition.NS[i]))
+            batch['A'] = torch.cat((batch['A'], transition.A))
+            batch['R'] = torch.cat((batch['R'], transition.R))
+        batch['S'] = tuple(batch['S'])
+        batch['NS'] = tuple(batch['NS'])
+        return Transition(batch['S'], batch['A'], batch['NS'], batch['R'])
+
+    def reset(self):
+        self.buffer = [None for _ in range(self.N)]
+        self.head = 0
+        self.tail = 0
+
 
 torch.cuda.empty_cache()
 
 # Implements https://spinningup.openai.com/en/latest/algorithms/ddpg.html
 
-actor = DriverActorModel().to(DEVICE, T)
-critic = DriverCriticModel().to(DEVICE, T)
+actor = DriverActorModel().to(device=DEVICE, dtype=T)
+critic = DriverCriticModel().to(device=DEVICE, dtype=T)
 
-actor_target = copy.deepcopy(actor).to(DEVICE, T)
-critic_target = copy.deepcopy(critic).to(DEVICE, T)
+actor_target = copy.deepcopy(actor).to(device=DEVICE, dtype=T)
+critic_target = copy.deepcopy(critic).to(device=DEVICE, dtype=T)
 
 actor_opt = torch.optim.Adam(actor.parameters(), 1e-2)
 critic_opt = torch.optim.Adam(critic.parameters(), 1e-2)
@@ -128,88 +184,61 @@ ENV = Environment()
 
 GAMMA = 0.990
 POLYAK = 0.995
-N_TRANSITIONS = 600
+N_TRANSITIONS = 300
 BATCH_SIZE = 4
 N_UPDATES = 100
 
-HEAD = 0
-TAIL = 0
+buffer = CircularReplayBuffer()
 
-# State: (IMG, CAM, VEL, INP)
-# S  -> BUFFER[0, ...]
-# S' -> BUFFER[1, ...]
-IMG_BUFFER = torch.zeros(2, N_TRANSITIONS, *ENV.grab_screenshot().shape, dtype=T, device=DEVICE)
-CAM_BUFFER = torch.zeros(2, N_TRANSITIONS, 3, dtype=T, device=DEVICE)
-VEL_BUFFER = torch.zeros(2, N_TRANSITIONS, 3, dtype=T, device=DEVICE)
-INP_BUFFER = torch.zeros(2, N_TRANSITIONS, 4, dtype=T, device=DEVICE)
-
-# Action: ~INP
-ACT_BUFFER = torch.zeros(N_TRANSITIONS, 4, dtype=T, device=DEVICE)
-
-# Reward: f(DMG)
-REW_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
-
-# Final flag: {0, 1}
-FIN_BUFFER = torch.zeros(N_TRANSITIONS, dtype=T, device=DEVICE)
-
+import time
 while True:
     # Interact with the environment using actor network
     with torch.no_grad():
-        IMG, INP, CAM, VEL, REW = ENV.observe()
-        FIN = REW != 1
-        IMG_BUFFER[0, TAIL, ...], INP_BUFFER[0, TAIL, ...], CAM_BUFFER[0, TAIL, ...], VEL_BUFFER[0, TAIL, ...], FIN_BUFFER[TAIL] = IMG, INP, CAM, VEL, FIN
-        ACT = actor(IMG, INP, CAM, VEL)
-        ENV.act(ACT)
-        ACT_BUFFER[TAIL, ...] = ACT
-        IMG, INP, CAM, VEL, REW = ENV.observe()
-        IMG_BUFFER[1, TAIL, ...], INP_BUFFER[1, TAIL, ...], CAM_BUFFER[1, TAIL, ...], VEL_BUFFER[1, TAIL, ...], REW_BUFFER[TAIL] = IMG, INP, CAM, VEL, REW
-        TAIL = (TAIL+1) % N_TRANSITIONS
-        HEAD = (TAIL+1) % N_TRANSITIONS if HEAD == TAIL else HEAD
+        *S, _REW = ENV.observe()
+        FIN = 0 if _REW == 1 else 1
 
+        a = time.time()
+        A = actor(*S)
+        ENV.act(A)
+        b = time.time()
+
+        *NS, REW = ENV.observe()        
+        buffer += Transition(S, A, NS, REW)
+        print(b - a)
+        
     # If the interaction episode is over, update the models
     if FIN:
 
-        # Calculate indices population for circular buffer
-        if TAIL == HEAD:
-            IDX = list(range(N_TRANSITIONS))
-        elif TAIL < HEAD:
-            IDX = list(range(HEAD, N_TRANSITIONS)) + list(range(0, TAIL+1))
-        elif HEAD < TAIL:
-            IDX = list(range(HEAD, TAIL+1))
-        HEAD = 0
-        TAIL = 0
-
-        # TODO: For this application, sampling randomly is kind of an interesting strategy. It might make more sense to sample
-        # contiguous chunks of time instead. 
-        for n in N_UPDATES:
+        for n in range(N_UPDATES):
 
             # Sample indices from circular buffer
-            SAMPLE = random.sample(IDX, BATCH_SIZE)
-
-            IMG, INP, CAM, VEL = [BUFFER[:, SAMPLE, ...] for BUFFER in (IMG_BUFFER, INP_BUFFER, CAM_BUFFER, VEL_BUFFER)]
-            ACT, FIN, REW      = ACT_BUFFER[SAMPLE, ...], FIN_BUFFER[SAMPLE], REW_BUFFER[SAMPLE]
-
-            STATE      = IMG[0, :, ...].squeeze(), INP[0, :, ...].squeeze(), CAM[0, :, ...].squeeze(), VEL[0, :, ...].squeeze()
-            NEXT_STATE = IMG[1, :, ...].squeeze(), INP[1, :, ...].squeeze(), CAM[1, :, ...].squeeze(), VEL[1, :, ...].squeeze()
+            batch = buffer.sample(BATCH_SIZE)
+            print('sampled')
 
             # Get 'best estimate' from target networks
-            ACT_T  = actor_target(*NEXT_STATE)
-            CRT_T  = critic_target(*NEXT_STATE, ACT_T)
+            ACT_T  = actor_target(*batch.NS)
+            CRT_T  = critic_target(*batch.NS, ACT_T)
             TARGET = REW + GAMMA * (1 - FIN) * CRT_T
+
+            print('target')
 
             # Update critic against best estimate via gradient descent
             critic_opt.zero_grad()
-            CRIT_LOSS = (critic(*STATE, ACT[:, ...].squeeze()) - TARGET).square().sum() / BATCH_SIZE
+            CRIT_LOSS = (critic(*batch.S, batch.A) - TARGET).square().sum() / BATCH_SIZE
             CRIT_LOSS.backward()
             torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
             critic_opt.step()
 
+            print('critic opt')
+
             # Update actor against best estimate via gradient ascent
             actor_opt.zero_grad()
-            ACTOR_LOSS = -critic(*STATE, actor(*STATE)).sum() / BATCH_SIZE
+            ACTOR_LOSS = -critic(*batch.S, actor(*batch.S)).sum() / BATCH_SIZE
             ACTOR_LOSS.backward()
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
             actor_opt.step()
+
+            print('actor opt')
 
             # Update target network parameters
             ACTOR_PARAMS    = torch.nn.utils.parameters_to_vector(actor.parameters())
@@ -218,3 +247,7 @@ while True:
             CRITIC_T_PARAMS = torch.nn.utils.parameters_to_vector(critic_target.parameters())
             torch.nn.utils.vector_to_parameters((ACTOR_T_PARAMS * POLYAK) + (1 - POLYAK) * ACTOR_PARAMS, actor_target.parameters())
             torch.nn.utils.vector_to_parameters((CRITIC_T_PARAMS * POLYAK) + (1 - POLYAK) * CRITIC_PARAMS, critic_target.parameters())
+
+            print('update target')
+
+        buffer.reset()

@@ -81,9 +81,10 @@ class DriverModelBase(nn.Module):
         self.collate = nn.Linear(1000 + 3 + self.controller_input_size, self.controller_input_size).to(device=DEVICE, dtype=T)
  
     def forward(self, IMG, INP, CAM, VEL):
-        IMG_FEATURES = self.visual(self.rescale(IMG)).squeeze()
-        ROTATED_CONTROLLER_INPUTS = self.rotation_matrix(CAM).reshape(self.controller_input_size, self.controller_input_size)
-        X = torch.cat((IMG_FEATURES, VEL, ROTATED_CONTROLLER_INPUTS @ INP))
+        IMG_FEATURES = self.visual(self.rescale(IMG))
+        CONTROLLER_INPUT_ROTATION_MATRIX = self.rotation_matrix(CAM).reshape(-1, self.controller_input_size, self.controller_input_size)
+        ROTATED_CONTROLLER_INPUTS = torch.bmm(CONTROLLER_INPUT_ROTATION_MATRIX, INP.unsqueeze(-1)).squeeze(-1)
+        X = torch.cat((IMG_FEATURES, VEL, ROTATED_CONTROLLER_INPUTS), dim=-1)
         Y = self.pre_collate(X)
         Y = self.collate(Y) @ ROTATED_CONTROLLER_INPUTS.t()
         return IMG_FEATURES, ROTATED_CONTROLLER_INPUTS, X, Y
@@ -94,17 +95,17 @@ class DriverActorModel(DriverModelBase):
     def __init__(self, **kwargs):
         import copy
         super().__init__(**kwargs)
-        self.pre_collate_P = copy.deepcopy(self.pre_collate).to(self.pre_collate).to(device=DEVICE, dtype=T)
-        self.collate_P = self.collate.__class__(self.collate.in_features, 1)
+        self.pre_collate_P = copy.deepcopy(self.pre_collate).to(device=DEVICE, dtype=T)
+        self.collate_P = self.collate.__class__(self.collate.in_features, 1).to(device=DEVICE, dtype=T)
 
     def forward(self, IMG, INP, CAM, VEL):
         IMG_FEATURES, ROTATED_CONTROLLER_INPUTS, X, COLLISION_AVOIDANCE = super().forward(IMG, INP, CAM, VEL)
         COLLISION_PROBABILITY = self.pre_collate_P(X)
         COLLISION_PROBABILITY = self.collate_P(COLLISION_PROBABILITY)
         COLLISION_PROBABILITY = nn.functional.sigmoid(COLLISION_PROBABILITY)
-        COLLISION_AVOIDANCE_JOYSTICK = nn.functional.tanh(COLLISION_AVOIDANCE[:2])
-        COLLISION_AVOIDANCE_TRIGGERS = nn.functional.sigmoid(COLLISION_AVOIDANCE[2:])
-        COLLISION_AVOIDANCE = torch.cat((COLLISION_AVOIDANCE_JOYSTICK, COLLISION_AVOIDANCE_TRIGGERS))
+        COLLISION_AVOIDANCE_JOYSTICK = nn.functional.tanh(COLLISION_AVOIDANCE[:, :2])
+        COLLISION_AVOIDANCE_TRIGGERS = nn.functional.sigmoid(COLLISION_AVOIDANCE[:, 2:])
+        COLLISION_AVOIDANCE = torch.cat((COLLISION_AVOIDANCE_JOYSTICK, COLLISION_AVOIDANCE_TRIGGERS), dim=-1)
         return (INP * (1 - COLLISION_PROBABILITY)) + (COLLISION_PROBABILITY * COLLISION_AVOIDANCE)
 
 # State, Action -> QValue
