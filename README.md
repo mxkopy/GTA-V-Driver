@@ -21,13 +21,6 @@ The idea is that the model might learn some key things from this information:
 
 The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The plan is to do this as much as possible to avoid 'LiDAR' (i.e. depth mapping and such). 
 
-# Running the code
-
-You'll want to build the C# project in Visual Studio, then copy the release files into the ScriptHookV scripts folder. 
-
-**You'll also have to run HidHide for your controller on GTA V**, since the script works by simulating a virtual controller and the game won't recognize it unless it's the only one. 
-
-
 # Dependencies
 * ScriptHookV.dll
 * PyTorch
@@ -35,3 +28,9 @@ You'll want to build the C# project in Visual Studio, then copy the release file
 * HidHide
 
 The rest of the dependencies can be installed using the .NET and python package managers. 
+
+# Running the code
+You'll want to build the C# project in Visual Studio, then copy the release files into the ScriptHookV scripts folder. 
+
+**You'll also have to run HidHide for your controller on GTA V**, since the script works by simulating a virtual controller and the game won't recognize it unless it's the only one. 
+
