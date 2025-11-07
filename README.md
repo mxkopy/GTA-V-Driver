@@ -14,10 +14,10 @@ The actor outputs a vector that replaces INP, called ACT.
 The reward is 1 if DMG is 0, and -DMG otherwise.
 
 The idea is that the model might learn some key things from this information: 
-* What constitutes an obstacle (learned in the MobileNet weights perhaps)
+* Whether something is an obstacle
 * The velocity of an obstacle relative to the player's vehicle 
-* A projection that maps the controller's inputs to an acceleration vector in the game world 
-* Whether or not the player's input will result in a crash
+* A mapping from controller input space to acceleration in game space 
+* Whether or not the controller input will result in a crash
 
 The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The plan is to do this as much as possible to avoid 'LiDAR' (i.e. depth mapping and such). 
 
