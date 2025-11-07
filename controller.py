@@ -26,8 +26,8 @@ X2VIG = {
 
 
 # TODO: synchronize this stuff with the environment. 
-# Ideally the game waits for an action, and the actor polls game & input state as needed.
-# Should provide the actor with the last state & input recorded before it starts processing. 
+# Ideally the game waits for an action, and the AI polls game & input state as needed.
+# The game should also keep a state buffer so the user's input during training or inference isn't recorded
 class ControllerHandler(xinput.EventHandler):
 
     def __init__(self, lp_model=None):
@@ -91,10 +91,10 @@ class Environment:
         self.resolution = resolution
         xinput.GamepadThread(self.gamepad)
     
-    def observe(self):
-        return [self.grab_screenshot()] + [torch.zeros(1, 4, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.tensor([1], dtype=T, device=DEVICE) if torch.rand(1) < 0.9 else torch.tensor([-100], dtype=T, device=DEVICE)]
-
     def observe_base(self):
+        return [self.grab_screenshot()] + [torch.zeros(1, 4, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.tensor([0], dtype=T, device=DEVICE)]
+
+    def _observe_base(self):
         while not 1 & self.ipc.read_byte():
             self.ipc.seek(0)
         self.ipc.seek(0)
@@ -192,9 +192,9 @@ ENV = Environment()
 
 GAMMA = 0.990
 POLYAK = 0.995
-N_TRANSITIONS = 300
+N_TRANSITIONS = 10
 BATCH_SIZE = 4
-N_UPDATES = 100
+N_UPDATES = 10
 
 buffer = CircularReplayBuffer()
 
@@ -209,12 +209,12 @@ while True:
         *NS, REW = ENV.act(A)
 
         buffer += Transition(S, A, NS, REW)
-        
+
         b = time.time()
         print(b - a)
         
-    # If the interaction episode is over, update the models
-    if FIN:
+    # If the buffer is full, update the models
+    if buffer.tail == N_TRANSITIONS-1:
 
         for n in range(N_UPDATES):
 
