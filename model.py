@@ -64,6 +64,19 @@ class FourierLossWindow:
 #         y = self.qpf(self.Q, -x, A, b, self.e, self.e).squeeze()
 #         return (y[0:4] + y[4:]) / 2
 
+# Amazing one-liner
+# Image.fromarray(img.squeeze().cpu().numpy(), mode='F').show()
+
+class VisualModel:
+
+    def __new__(cls, sizes=[(1080 - (120 * n), 1920 - (120*n)) for n in range(7)], channels=[4, 8, 16, 16, 16, 16, 1]):
+        channels.insert(0, 3)
+        return nn.Sequential(
+            nn.Sequential(
+                nn.Conv2d(channels[i], channels[i+1], (3, 3), 1),
+                nn.AdaptiveMaxPool2d(sizes[i])
+            ) for i in range(len(sizes))
+        )
 
 class DriverModelBase(nn.Module):
 

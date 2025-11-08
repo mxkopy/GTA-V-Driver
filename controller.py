@@ -95,15 +95,16 @@ class Environment:
         return self.observe()
 
     def grab_screenshot(self):
+        import numpy as np
         img = self.sct.grab()
         while img is None:
             img = self.sct.grab()
         img = torch.as_tensor(img, device=DEVICE)
         img = img[:, :, :3].permute(2, 0, 1)
-        img = img.unsqueeze(0).to(device=DEVICE, dtype=T)
-        img = torch.nn.functional.adaptive_avg_pool2d(img, self.img_resolution)
-        # Amazing one-liner
-        # Image.fromarray(img.squeeze().cpu().numpy(), mode='F').show()
+        img = img.unsqueeze(0).to(device=DEVICE, dtype=T) / 255
+        img = torch.nn.functional.adaptive_max_pool2d(img, self.img_resolution)
+        # In the interests of completeness I've made the one-liner actually work
+        # Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
         return img
 
 
