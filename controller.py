@@ -2,7 +2,7 @@ import vgamepad as vg
 import XInput as xinput
 import mmap
 import struct
-import mss
+import bettercam
 from time import sleep
 import torch
 import torchvision.io
@@ -12,67 +12,40 @@ from model import DriverActorModel, DriverCriticModel, T, DEVICE
 from PIL import Image
 from collections import namedtuple
 
+# torch.from_dlpack()
 
-X2VIG = {
-    xinput.BUTTON_DPAD_DOWN: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-    xinput.BUTTON_DPAD_UP: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-    xinput.BUTTON_DPAD_LEFT: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-    xinput.BUTTON_DPAD_RIGHT: vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
-    xinput.BUTTON_A: vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-    xinput.BUTTON_B: vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-    xinput.BUTTON_X: vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-    xinput.BUTTON_Y: vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-}
-
-
-# TODO: synchronize this stuff with the environment. 
-# Ideally the game waits for an action, and the AI polls game & input state as needed.
-# The game should also keep a state buffer so the user's input during training or inference isn't recorded
+# Performs virtual input actions & allows polling of controller state
 class ControllerHandler(xinput.EventHandler):
 
-    def __init__(self, lp_model=None):
+    def __init__(self):
         connected = xinput.get_connected()
         controller = [i for i in range(4) if connected[i]][0]
         super().__init__(controller)
         self.set_filter(xinput.FILTER_NONE)
         self.output_pad = vg.VX360Gamepad()
-        self.lp_model = lp_model
-        self.move_inputs = [0.0, 0.0, 0.0, 0.0]
-        self.action = [None, None, None, None]
         
     def process_button_event(self, event):
         if event.type == xinput.EVENT_BUTTON_PRESSED:
-            self.output_pad.press_button(X2VIG[event.button_id])
+            self.output_pad.press_button(event.button_id)
         if event.type == xinput.EVENT_BUTTON_RELEASED:
-            self.output_pad.release_button(X2VIG[event.button_id])
+            self.output_pad.release_button(event.button_id)
         self.output_pad.update()
 
-    def process_trigger_event(self, event):
-        if event.trigger == xinput.LEFT:
-            self.move_inputs[2] = event.value
-        if event.trigger == xinput.RIGHT:
-            self.move_inputs[3] = event.value
-        if self.action[2] is not None:
-            self.output_pad.left_trigger_float(self.action[2])
-            self.action[2] = None
-            self.output_pad.update()
-        if self.action[3] is not None:
-            self.output_pad.right_trigger_float(self.action[3])
-            self.action[3] = None
-            self.output_pad.update()
-
     def process_stick_event(self, event):
-        if event.stick == xinput.LEFT:
-            self.move_inputs[0] = event.x
-            self.move_inputs[1] = event.y
-            if self.action[0] is not None and self.action[1] is not None:
-                self.output_pad.left_joystick_float(self.action[0], self.action[1])
-                self.action[0] = None
-                self.action[1] = None
-                self.output_pad.update()
         if event.stick == xinput.RIGHT:
             self.output_pad.right_joystick_float(event.x, event.y)
             self.output_pad.update()
+
+    def perform_action(self, action):
+        action = action.squeeze()
+        self.output_pad.left_joystick_float(max(min(action[0].item(), -1), 1), max(min(action[1].item(), -1), 1))
+        self.output_pad.left_trigger_float(max(min(action[2].item(), 0), 1))
+        self.output_pad.right_trigger_float(max(min(action[3].item(), 0), 1))
+        self.output_pad.update()
+
+    def poll_state(self):
+        state = xinput.get_state()
+        return torch.tensor(xinput.get_thumb_values(state)[0] + xinput.get_trigger_values(state)).to(device=DEVICE, dtype=T)
 
     def process_connection_event(self, event):
         pass
@@ -83,48 +56,55 @@ CAM_END = 13
 VEL_END = 25
 DMG_END = 29
 
+from bettercam.processor.cupy_processor import CupyProcessor
+
+def process_cvtcolor(self, image):
+    return image
+
+CupyProcessor.process_cvtcolor = process_cvtcolor
+
 class Environment:
 
-    def __init__(self, IPC_BYTES=VEL_END, resolution=(720, 1280)):
+    def __init__(self, IPC_BYTES=DMG_END, img_resolution=(720, 1280)):
         self.ipc = mmap.mmap(-1, IPC_BYTES, "ipc.mem")
         self.gamepad = ControllerHandler()
-        self.resolution = resolution
+        self.img_resolution = img_resolution
+        self.sct = bettercam.create(device_idx=0, nvidia_gpu=True)
+        # self.sct.start()
         xinput.GamepadThread(self.gamepad)
     
-    def observe_base(self):
+    def observe(self):
         return [self.grab_screenshot()] + [torch.zeros(1, 4, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.zeros(1, 3, dtype=T, device=DEVICE), torch.tensor([0], dtype=T, device=DEVICE)]
 
-    def _observe_base(self):
-        while not 1 & self.ipc.read_byte():
-            self.ipc.seek(0)
+    def _observe(self):
         self.ipc.seek(0)
-        PCKT = self.ipc.read_byte() + self.ipc.read(DMG_END - ACK_END)
+        while not (1 & self.ipc.read_byte()):
+            self.ipc.seek(0)
+        PCKT = b'1' + self.ipc.read(DMG_END)
         CAM = struct.unpack('<3f', PCKT[ACK_END:CAM_END])
         VEL = struct.unpack('<3f', PCKT[CAM_END:VEL_END])
-        DMG = struct.unpack('I', PCKT[VEL_END:DMG_END])
-        REW = 1 if DMG == 0 else -100
-        IMG, INP, CAM, VEL, REW = [self.grab_screenshot()] + [torch.tensor(x, dtype=T, device=DEVICE) for x in (self.gamepad.move_inputs, CAM, VEL, REW)]
-        return IMG, INP, CAM, VEL, REW
-    
-    def observe(self):
-        *S, FIN = self.observe_base()
-        # This a rollie not a stop watch
-        # Shit don't ever stop
-        return *S, 0
+        DMG = struct.unpack('i', PCKT[VEL_END:DMG_END])
+        IMG, INP, CAM, VEL, DMG = [self.grab_screenshot()] + [torch.tensor(x, dtype=T, device=DEVICE).unsqueeze(0) for x in (self.gamepad.poll_state(), CAM, VEL, DMG)]
+        return IMG, INP, CAM, VEL, DMG
 
     def act(self, action):
-        self.gamepad.action = action.tolist()
+        self.gamepad.perform_action(action)
         self.ipc.seek(0)
         self.ipc.write_byte(0)
-        # TODO: spin on game update
-        return self.observe_base()
+        # TODO: wait on game update
+        return self.observe()
 
     def grab_screenshot(self):
-        with mss.mss() as sct:
-            img = sct.grab(sct.monitors[1])
-            img = Image.frombytes("RGB", img.size, img.rgb)
-            img = img.resize(self.resolution)
-            return torchvision.transforms.functional.pil_to_tensor(img).to(device=DEVICE, dtype=T).unsqueeze(0)
+        img = self.sct.grab()
+        while img is None:
+            img = self.sct.grab()
+        img = torch.as_tensor(img, device=DEVICE)
+        img = img[:, :, :3].permute(2, 0, 1)
+        img = img.unsqueeze(0).to(device=DEVICE, dtype=T)
+        img = torch.nn.functional.adaptive_avg_pool2d(img, self.img_resolution)
+        # Amazing one-liner
+        # Image.fromarray(img.squeeze().cpu().numpy(), mode='F').show()
+        return img
 
 
 Transition = namedtuple('Transition', ('S', 'A', 'NS', 'R'))
@@ -165,8 +145,10 @@ class CircularReplayBuffer:
                 batch['NS'][i] = torch.cat((batch['NS'][i], transition.NS[i]))
             batch['A'] = torch.cat((batch['A'], transition.A))
             batch['R'] = torch.cat((batch['R'], transition.R))
-        batch['S'] = tuple(batch['S'])
-        batch['NS'] = tuple(batch['NS'])
+        batch['S'] = tuple(s.to(device=DEVICE, dtype=T) for s in batch['S'])
+        batch['A'] = batch['A'].to(device=DEVICE, dtype=T)
+        batch['NS'] = tuple(s.to(device=DEVICE, dtype=T) for s in batch['NS'])
+        batch['R'] = batch['R'].to(device=DEVICE, dtype=T)
         return Transition(batch['S'], batch['A'], batch['NS'], batch['R'])
 
     def reset(self):
@@ -177,57 +159,73 @@ class CircularReplayBuffer:
 
 torch.cuda.empty_cache()
 
+IMG_RESOLUTION = (360, 640)
+
 # Implements https://spinningup.openai.com/en/latest/algorithms/ddpg.html
-
-actor = DriverActorModel().to(device=DEVICE, dtype=T)
-critic = DriverCriticModel().to(device=DEVICE, dtype=T)
-
-actor_target = copy.deepcopy(actor).to(device=DEVICE, dtype=T)
-critic_target = copy.deepcopy(critic).to(device=DEVICE, dtype=T)
-
-actor_opt = torch.optim.Adam(actor.parameters(), 1e-2)
-critic_opt = torch.optim.Adam(critic.parameters(), 1e-2)
-
-ENV = Environment()
 
 GAMMA = 0.990
 POLYAK = 0.995
-N_TRANSITIONS = 10
-BATCH_SIZE = 4
-N_UPDATES = 10
 
-buffer = CircularReplayBuffer()
+N_TRANSITIONS = 16
+BATCH_SIZE = 4
+N_UPDATES = 1
+
+LR = 1e-5
+
+ENV = Environment(img_resolution=IMG_RESOLUTION)
+
+actor = DriverActorModel().to(device=DEVICE, dtype=T)
+critic = DriverCriticModel().to(device=DEVICE, dtype=T)
+# try:
+#     actor.load_state_dict(torch.load('actor.pt'))
+# except:
+#     actor = actor.train_for_input_passthrough()
+#     torch.save(actor.state_dict(), 'actor.pt')
+
+actor_target = DriverActorModel(img_resolution=IMG_RESOLUTION).to(device=DEVICE, dtype=T)
+critic_target = DriverCriticModel(img_resolution=IMG_RESOLUTION).to(device=DEVICE, dtype=T)
+
+torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(actor.parameters()), actor_target.parameters())
+torch.nn.utils.vector_to_parameters(torch.nn.utils.parameters_to_vector(critic.parameters()), critic_target.parameters())
+
+actor_opt = torch.optim.AdamW(actor.parameters(), LR)
+critic_opt = torch.optim.AdamW(critic.parameters(), LR)
+
+
+buffer = CircularReplayBuffer(N_TRANSITIONS)
 
 import time
 while True:
     # Interact with the environment using actor network
     with torch.no_grad():
         a = time.time()
-
-        *S, FIN = ENV.observe()
-        A = actor(*S)
-        *NS, REW = ENV.act(A)
-
-        buffer += Transition(S, A, NS, REW)
-
+        *S, _ = ENV.observe()
         b = time.time()
+        with torch.autocast(device_type='cuda'):
+            A = actor(*S)
+        *NS, DMG = ENV.act(A)
+        REW = -DMG*0
+        S, NS, A, REW = tuple(s.to('cpu') for s in S), tuple(s.to('cpu') for s in NS), A.to('cpu'), REW.to('cpu')
+        buffer += Transition(S, A, NS, REW)
+        # print(torch.nn.functional.mse_loss(A, S[1]).item())
         print(b - a)
         
     # If the buffer is full, update the models
-    if buffer.tail == N_TRANSITIONS-1:
+    if False:
+    # if buffer.tail == N_TRANSITIONS-1:
 
         for n in range(N_UPDATES):
 
+            torch.cuda.empty_cache()
+
             # Sample indices from circular buffer
             batch = buffer.sample(BATCH_SIZE)
-            print('sampled')
 
             # Get 'best estimate' from target networks
-            ACT_T  = actor_target(*batch.NS)
-            CRT_T  = critic_target(*batch.NS, ACT_T)
-            TARGET = REW + GAMMA * (1 - FIN) * CRT_T
-
-            print('target')
+            with torch.autocast(device_type='cuda'):
+                ACT_T  = actor_target(*batch.NS)
+                CRT_T  = critic_target(*batch.NS, ACT_T)
+                TARGET = batch.R + (GAMMA * CRT_T)  
 
             # Update critic against best estimate via gradient descent
             critic_opt.zero_grad()
@@ -236,16 +234,14 @@ while True:
             torch.nn.utils.clip_grad_norm_(critic.parameters(), max_norm=1.0)
             critic_opt.step()
 
-            print('critic opt')
-
             # Update actor against best estimate via gradient ascent
             actor_opt.zero_grad()
-            ACTOR_LOSS = -critic(*batch.S, actor(*batch.S)).sum() / BATCH_SIZE
+            ACT = actor(*batch.S)
+            ACTOR_LOSS = -critic(*batch.S, ACT).sum() / BATCH_SIZE
+            ACTOR_LOSS += torch.nn.functional.mse_loss(ACT, batch.S[1])
             ACTOR_LOSS.backward()
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
             actor_opt.step()
-
-            print('actor opt')
 
             # Update target network parameters
             ACTOR_PARAMS    = torch.nn.utils.parameters_to_vector(actor.parameters())
@@ -254,7 +250,5 @@ while True:
             CRITIC_T_PARAMS = torch.nn.utils.parameters_to_vector(critic_target.parameters())
             torch.nn.utils.vector_to_parameters((ACTOR_T_PARAMS * POLYAK) + (1 - POLYAK) * ACTOR_PARAMS, actor_target.parameters())
             torch.nn.utils.vector_to_parameters((CRITIC_T_PARAMS * POLYAK) + (1 - POLYAK) * CRITIC_PARAMS, critic_target.parameters())
-
-            print('update target')
 
         buffer.reset()
