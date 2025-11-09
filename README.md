@@ -19,7 +19,7 @@ The idea is that the model might learn some key things from this information:
 * A mapping from controller input space to acceleration in game space 
 * Whether or not the controller input will result in a crash
 
-The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The plan is to do this as much as possible to avoid 'LiDAR' (i.e. depth mapping and such). 
+The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The hope is to avoid 'LiDAR' methods (i.e. depth mapping and such). 
 
 # Dependencies
 * ScriptHookV.dll
