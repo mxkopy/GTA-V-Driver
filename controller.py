@@ -12,8 +12,6 @@ from model import DriverActorModel, DriverCriticModel, T, DEVICE, IMG_RESOLUTION
 from PIL import Image
 from collections import namedtuple
 
-# torch.from_dlpack()
-
 # Performs virtual input actions & allows polling of controller state
 class ControllerHandler(xinput.EventHandler):
 
@@ -178,6 +176,9 @@ class ReplayBuffer:
     def sample(self, batch_size):
         observations = random.sample([x for x in self.buffer if x is not None], batch_size)
         return sum(observations)
+
+    def reset(self):
+        self.idx = 0
     
 
 
@@ -222,13 +223,10 @@ actor_buffer = TimeDelayFrameBuffer(n=12)
 
 print('starting loop')
 
-import time
 while True:
     # Interact with the environment using actor network
     with torch.no_grad():
-        # a = time.time()
         *S, _ = ENV.observe()
-        # b = time.time()
         with torch.autocast(device_type='cuda'):
             A = actor(*S)
         *NS, DMG = ENV.act(A)
@@ -236,17 +234,15 @@ while True:
         S, NS, A, REW = tuple(s.to('cpu') for s in S), tuple(s.to('cpu') for s in NS), A.to('cpu'), REW.to('cpu')
         replay_buffer += Transition(S, A, NS, REW)
         print(torch.nn.functional.mse_loss(A, S[1]).item())
-        # print(b - a)
         
     # If the buffer is full, update the models
     if replay_buffer.idx == N_TRANSITIONS:
-    # if buffer.tail == N_TRANSITIONS-1:
 
         for n in range(N_UPDATES):
 
             torch.cuda.empty_cache()
 
-            # Sample indices from circular buffer
+            # Sample experiences from replay buffer
             batch = replay_buffer.sample(BATCH_SIZE)
 
             # Get 'best estimate' from target networks
