@@ -4,6 +4,7 @@ import torch.nn as nn
 import math
 from torch.autograd import Variable
 import torchvision.models as models
+import torchvision
 
 T = torch.float32
 DEVICE = 'cuda'
@@ -65,40 +66,62 @@ class FourierLossWindow:
 #         return (y[0:4] + y[4:]) / 2
 
 # Amazing one-liner
-# Image.fromarray(img.squeeze().cpu().numpy(), mode='F').show()
+# Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
 
-class VisualModel:
+IMG_RESOLUTION = (360, 640)
 
-    def __new__(cls, sizes=[(1080 - (120 * n), 1920 - (120*n)) for n in range(7)], channels=[4, 8, 16, 16, 16, 16, 1]):
+
+
+class VisualModel(nn.Module):
+
+    def __init__(self, img_resolution=(360, 640), channels=[3, 3, 3, 3, 3]):
+        super().__init__()
         channels.insert(0, 3)
-        return nn.Sequential(
-            nn.Sequential(
-                nn.Conv2d(channels[i], channels[i+1], (3, 3), 1),
-                nn.AdaptiveMaxPool2d(sizes[i])
-            ) for i in range(len(sizes))
+        self.sz = lambda i: max(img_resolution) // (2**i)
+        self.model = nn.Sequential(
+            torchvision.transforms.CenterCrop(self.sz(0)),
+            *(nn.Sequential(
+                nn.Conv2d(in_channels=channels[i], out_channels=channels[i+1], kernel_size=(3, 3)),
+                nn.AdaptiveMaxPool2d(self.sz(i+1)),
+                nn.LayerNorm((channels[i+1], self.sz(i+1), self.sz(i+1)), elementwise_affine=False)
+            ) for i in range(len(channels)-1))
         )
+
+    def forward(self, img):
+        return self.model(img.to(device=DEVICE, dtype=T) / 255)
 
 class DriverModelBase(nn.Module):
 
-    def __init__(self, controller_input_size=4, img_resolution=(360, 640)):
+    def __init__(self, controller_input_size=4, img_resolution=(360, 640), visual_channels=[3, 3, 3, 3, 3]):
         super().__init__()
-        self.visual = models.mobilenet_v3_small(models.MobileNet_V3_Small_Weights).to(device=DEVICE, dtype=T)
+        self.visual = VisualModel(img_resolution=img_resolution, channels=visual_channels).to(device=DEVICE, dtype=T)
+        # self.visual = models.mobilenet_v3_small(models.MobileNet_V3_Small_Weights).to(device=DEVICE, dtype=T)
+        self.visual.train()
+        self.visual_output_size = visual_channels[-1] * self.visual.sz(len(visual_channels)-1)**2
+        # self.visual_output_size = 1000
         self.controller_input_size = controller_input_size
-        self.hidden_size = 1000 + 3 + self.controller_input_size
+        self.hidden_size = self.visual_output_size + 3 + self.controller_input_size
         self.rotation_matrix = nn.Sequential(
-            nn.Linear(3, controller_input_size**2), 
-            nn.ELU(),
-            nn.Linear(controller_input_size**2, controller_input_size**2)
+            nn.Linear(3, controller_input_size**2),
+            # nn.ELU(),
+            # nn.Linear(controller_input_size**2, controller_input_size**2),
+            # nn.ELU(),
+            
         ).to(device=DEVICE, dtype=T)
-        self.collate = nn.Linear(self.hidden_size, self.controller_input_size).to(device=DEVICE, dtype=T)
+        self.collate = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.ELU(),
+            nn.Linear(self.hidden_size, self.controller_input_size)
+        )
+        # self.collate = nn.Linear(self.hidden_size, self.controller_input_size).to(device=DEVICE, dtype=T)
  
     def forward(self, IMG, INP, CAM, VEL):
         IMG_FEATURES = self.visual(IMG)
         CONTROLLER_INPUT_ROTATION_MATRIX = self.rotation_matrix(CAM).reshape(-1, self.controller_input_size, self.controller_input_size)
         ROTATED_CONTROLLER_INPUTS = torch.bmm(CONTROLLER_INPUT_ROTATION_MATRIX, INP.unsqueeze(-1)).squeeze(-1)
-        X = torch.cat((IMG_FEATURES, VEL, ROTATED_CONTROLLER_INPUTS), dim=-1)
-        Y = torch.bmm(self.collate(X).unsqueeze(1), CONTROLLER_INPUT_ROTATION_MATRIX.permute(0, 2, 1)).squeeze(1)
-        # Y = self.collate(Y) @ CONTROLLER_INPUT_ROTATION_MATRIX.t()
+        X = torch.cat((IMG_FEATURES.flatten(start_dim=1), VEL, ROTATED_CONTROLLER_INPUTS), dim=-1)
+        Y = self.collate(X).unsqueeze(1)
+        Y = torch.bmm(Y, CONTROLLER_INPUT_ROTATION_MATRIX.permute(0, 2, 1)).squeeze(1)
         return IMG_FEATURES, CONTROLLER_INPUT_ROTATION_MATRIX, X, Y
 
 # State -> Action
@@ -117,11 +140,14 @@ class DriverActorModel(DriverModelBase):
         for param in self.visual.parameters():
             param.requires_grad = False
         while loss >= cutoff:
-            img = torch.rand(batchsize, 3, 220, 220)
-            inp = (torch.rand(batchsize, 4) * 2) - 1
-            inp[:, 2:] = torch.clamp(inp[:, 2:], min=0, max=1)
-            cam = (torch.rand(batchsize, 3) * 2) - 1
-            vel = (torch.rand(batchsize, 3) * 2) - 1
+            img = torch.rand(batchsize, 3, *IMG_RESOLUTION) * 255
+            inp = torch.rand(batchsize, 4)
+            inp[:, :2] *= 2
+            inp[:, :2] -= 1
+            cam = torch.rand(batchsize, 3)*2 -1
+            vel = torch.rand(batchsize, 3)*2 -1
+            cam = cam / (cam * cam).sum(dim=1, keepdim=True).sqrt()
+
             img, inp, cam, vel = [x.to(device=DEVICE, dtype=T) for x in (img, inp, cam, vel)]
             loss = torch.nn.functional.mse_loss(self(img, inp, cam, vel), inp)
             opt.zero_grad()
@@ -141,7 +167,7 @@ class DriverCriticModel(DriverModelBase):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.post_collate = nn.Linear(self.collate.out_features, 1)
+        self.post_collate = nn.Linear(self.controller_input_size, 1)
 
     def forward(self, IMG, _, CAM, VEL, ACT):
         _, _, _, Y = super().forward(IMG, ACT, CAM, VEL)
