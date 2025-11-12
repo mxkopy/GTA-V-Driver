@@ -34,4 +34,6 @@ You'll want to build the C# project in Visual Studio, then copy the release file
 
 **You'll also have to run HidHide for your controller on GTA V**, since the script works by simulating a virtual controller and the game won't recognize it unless it's the only one. 
 
-Then, run `controller.py`, before starting GTA. This will launch the VigEmBus virtual controller and the event loop. Then you can launch GTA V and enter a vehicle, at which point training will start. 
+Then, run `controller.py`, before starting GTA. This will launch the VigEmBus virtual controller loop. You'll want to run this in its own python process if you want to modify the training loop without having to restart the game. 
+
+Next, run `training.py` to start the training loop. Now you can launch GTA V and enter a vehicle, at which point training will start. 

@@ -32,36 +32,34 @@ public enum GAME_PCKT
     DMG_END = 29,
 }
 
+
+
+
+
 public class GTAVDriver : Script
 {
     
     static MemoryMappedFile ipc;
     static MemoryMappedViewAccessor accessor;
-    static int LastVHealth;
-    //static bool ResetSet = false;
 
     public GTAVDriver()
     {
         Tick += OnTick;
-        LastVHealth = -1;
-        ipc = MemoryMappedFile.CreateOrOpen("ipc.mem", (long) GAME_PCKT.DMG_END);
+        ipc = MemoryMappedFile.CreateOrOpen("game.ipc", (long) GAME_PCKT.DMG_END);
         accessor = ipc.CreateViewAccessor(0, (long) GAME_PCKT.DMG_END);
     }
 
     private void OnTick(object sender, EventArgs e)
     {
         Vehicle V = Game.Player.Character.CurrentVehicle;
+        Game.Player.WantedLevel = 0;
 
         if (V != null)
         {
-            float[] CAM = GameplayCamera.Direction.Normalized.ToArray();
-            float[] VEL = Vector3.Project(V.Velocity, GameplayCamera.Direction.Normalized).ToArray();
-            int DMG = LastVHealth > 0 && LastVHealth > V.Health ? (LastVHealth - V.Health) : 0;
-            if (DMG > 0)
-            {
-                V.Repair();
-            }
-            LastVHealth = V.Health;
+            float[] CAM = Vector3.Project(GameplayCamera.Direction, V.ForwardVector).ToArray();
+            float[] VEL = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector)).ToArray();
+            int DMG = V.MaxHealth - V.Health;
+            V.Repair();
             accessor.WriteArray<float>((long) GAME_PCKT.ACK_END, CAM, 0, 3);
             accessor.WriteArray<float>((long) GAME_PCKT.CAM_END, VEL, 0, 3);
             accessor.Write<int>((long) GAME_PCKT.VEL_END, ref DMG);
