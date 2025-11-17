@@ -1,13 +1,24 @@
 import vgamepad as vg
 import XInput as xinput
-import struct
+import math
 from time import sleep
-from ipc import ControllerIPC
+from ipc import ControllerIPC, FLAGS
 
 # Performs virtual input actions & allows polling of controller state
 # TODO: Run this is another process so you don't have to restart the game 
 # every time you want to change the code (the game won't recognize the reconnected controller)
 class ControllerHandler(xinput.EventHandler):
+
+    def __init__(self):
+        print("\nWaiting for controller")
+        self.controller = self.get_connected_controller()
+        super().__init__(self.controller)
+        self.set_filter(xinput.FILTER_NONE)
+        print("\nInitializing output pad")      
+        self.output_pad = self.initialize_output_pad()
+        self.controller_ipc_loop = ControllerIPC()
+        self.controller_ipc_main = ControllerIPC()
+        self.disconnected = False
 
     def get_connected_controller(self):
         connected = xinput.get_connected()
@@ -28,15 +39,6 @@ class ControllerHandler(xinput.EventHandler):
                 sleep(1)
         return self.output_pad
 
-    def __init__(self):
-        print("\nWaiting for controller")
-        self.controller = self.get_connected_controller()
-        super().__init__(self.controller)
-        self.set_filter(xinput.FILTER_NONE)
-        print("\nInitializing output pad")      
-        self.output_pad = self.initialize_output_pad()
-        self.controller_ipc = ControllerIPC()
-
     def process_button_event(self, event):
         if event.type == xinput.EVENT_BUTTON_PRESSED:
             self.output_pad.press_button(event.button_id)
@@ -48,31 +50,49 @@ class ControllerHandler(xinput.EventHandler):
         if event.stick == xinput.RIGHT:
             self.output_pad.right_joystick_float(event.x, event.y)
             self.output_pad.update()
+        if event.stick == xinput.LEFT:
+            self.update()
 
     def process_connection_event(self, event):
-        pass
+        if event.type == xinput.EVENT_DISCONNECTED:
+            self.disconnected = True
+        if event.type == xinput.EVENT_CONNECTED:
+            self.disconnected = False
 
     def process_trigger_event(self, event):
-        pass
+        self.update()
 
-    def update_state(self):
-        xinput_state = xinput.get_state(self.controller)
-        state = xinput.get_thumb_values(xinput_state)[0] + xinput.get_trigger_values(xinput_state)
-        self.controller_ipc.write_state(*state)
+    def clamp(x: float, min_val: float=-1, max_val: float=1):
+        return min(max(0 if math.isnan(x) else x, min_val), max_val)
 
-    def perform_action(self):
-        self.update_state()
-        action = self.controller_ipc.get_action()
-        self.update_state()
-        self.output_pad.left_joystick_float(min(max(action[0], -1), 1), min(max(action[1], -1), 1))
-        self.output_pad.left_trigger_float(min(max(action[2], 0), 1))
-        self.output_pad.right_trigger_float(min(max(action[3], 0), 1))
+    def clamp_controller(x: float, y: float, lt: float, rt: float):
+        return ControllerHandler.clamp(x), ControllerHandler.clamp(y), ControllerHandler.clamp(lt, min_val=0), ControllerHandler.clamp(rt, min_val=0)
+
+    def update(self):
+        if self.disconnected:
+            self.controller_ipc_main.write_input(0.0, 0.0, 0.0, 0.0)
+        else:
+            xinput_state = xinput.get_state(self.controller)
+            state = xinput.get_thumb_values(xinput_state)[0] + xinput.get_trigger_values(xinput_state)
+            self.controller_ipc_main.write_input(*state)
+
+    def act(self, x: float, y: float, lt: float, rt: float):
+        self.output_pad.left_joystick_float(ControllerHandler.clamp(x), ControllerHandler.clamp(y))
+        self.output_pad.left_trigger_float(ControllerHandler.clamp(lt, min_val=0))
+        self.output_pad.right_trigger_float(ControllerHandler.clamp(rt, min_val=0))
         self.output_pad.update()
 
-    def start_thread(self):
+    def perform_action(self):
+        self.act(*self.controller_ipc_loop.pop_action())
+
+    def start_thread():
         gamepad_thread = ControllerHandler()
         xinput.GamepadThread(gamepad_thread)
         while True:
+            # gamepad_thread.update()
+            # gamepad_thread.perform_action()
+            # if gamepad_thread.controller_ipc.get_flag(FLAGS.ACTION_WRITTEN):
             gamepad_thread.perform_action()
 
-ControllerHandler().start_thread()
+if __name__ == '__main__':
+    ControllerHandler.start_thread()

@@ -10,65 +10,64 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-
-// On start       <- Wait for NN ACK
-//                -> NN sends random input to controller
-//                -> Set NN ACK
-//                -> Wait for GAME ACK
-// Read NN ACK    <- Unset NN ACK
-//                <- Get screenshot, game data, & user input; send NN input through. 
-//                <- Set GAME ACK
-//                <- Wait for NN ACK
-// Read GAME ACK  -> Unset GAME ACK
-//                -> Process screenshot, data. Predict user input. Send latest Ax <= b
-//                -> Set NN ACK
-//                -> Wait for GAME ACK
-
-public enum GAME_PCKT
-{
-    ACK_END = 1,
-    CAM_END = 13,
-    VEL_END = 25,
-    DMG_END = 29,
-}
-
-
-
-
-
 public class GTAVDriver : Script
 {
-    
-    static MemoryMappedFile ipc;
-    static MemoryMappedViewAccessor accessor;
+    static readonly Vector3 AIRPORT = new Vector3(-1161.462f, -2584.786f, 13.505f);
+
+    static GameIPC IPC = new GameIPC();
+    static GameState State = new GameState();
 
     public GTAVDriver()
     {
         Tick += OnTick;
-        ipc = MemoryMappedFile.CreateOrOpen("game.ipc", (long) GAME_PCKT.DMG_END);
-        accessor = ipc.CreateViewAccessor(0, (long) GAME_PCKT.DMG_END);
-    }
+        KeyDown += OnKeyDown;
 
+        Game.Player.Wanted.SetEveryoneIgnorePlayer(true);
+        Game.Player.Wanted.SetPoliceIgnorePlayer(true);
+    }
     private void OnTick(object sender, EventArgs e)
     {
         Vehicle V = Game.Player.Character.CurrentVehicle;
-        Game.Player.WantedLevel = 0;
+
+        Game.Player.Wanted.SetWantedLevel(0, false);
+        Game.Player.Wanted.ApplyWantedLevelChangeNow(false);
 
         if (V != null)
         {
-            float[] CAM = Vector3.Project(GameplayCamera.Direction, V.ForwardVector).ToArray();
-            float[] VEL = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector)).ToArray();
-            int DMG = V.MaxHealth - V.Health;
-            V.Repair();
-            accessor.WriteArray<float>((long) GAME_PCKT.ACK_END, CAM, 0, 3);
-            accessor.WriteArray<float>((long) GAME_PCKT.CAM_END, VEL, 0, 3);
-            accessor.Write<int>((long) GAME_PCKT.VEL_END, ref DMG);
-            accessor.Write(0, 1);
-            accessor.Flush();
-            while (accessor.ReadByte(0) == 1)
+            if (IPC.GetFlag((int)FLAGS.IS_TRAINING))
             {
-                Wait(1);
-            };
+                State.CAM = Vector3.Project(GameplayCamera.Direction, V.ForwardVector).ToArray();
+                State.VEL = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector)).ToArray();
+                State.DMG[0] = V.MaxHealth - V.Health;
+                IPC.WriteState(State);
+                while (IPC.GetFlag((int)FLAGS.GAME_STATE_WRITTEN) && IPC.GetFlag((int)FLAGS.IS_TRAINING));
+            }
+            else
+            {
+                Wait(10);
+                Reset();
+            }
+        }
+    }
+
+    private void Reset()
+    {
+        Game.Player.Wanted.SetEveryoneIgnorePlayer(true);
+        Game.Player.Wanted.SetPoliceIgnorePlayer(true);
+        if (Game.Player.Character.CurrentVehicle != null)
+        {
+            Game.Player.Character.CurrentVehicle.Delete();
+        }
+        Game.Player.Character.Position = AIRPORT;
+        Vehicle vehicle = World.CreateVehicle(VehicleHash.EntityXF, Game.Player.Character.Position);
+        Game.Player.Character.SetIntoVehicle(vehicle, VehicleSeat.Driver);
+    }
+
+    private void OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if(e.KeyCode == Keys.Back)
+        {
+            Reset();
         }
     }
 }

@@ -1,60 +1,60 @@
 import mmap
+from typing import Iterable
 import sys
+import time
 from struct import pack, unpack, calcsize
+
+N_FLAGS = 8
+FLAGS_TAG = "flags.ipc"
+
+class IPCFlags:
+
+    def __init__(self, n: int = N_FLAGS, tagname: str = FLAGS_TAG):
+        self.flags = mmap.mmap(-1, -(n // -8), tagname)
+
+    def set_flag(self, idx: int, value: bool) -> None:
+        pos, offset = idx // 8, idx % 8
+        mask = ~(1 << offset)
+        self.flags.seek(pos)
+        state = self.flags.read_byte()
+        self.flags.seek(pos)
+        updated_state = (state & mask) | (value << offset)
+        self.flags.write_byte(updated_state)
+        self.flags.flush()
+
+    def get_flag(self, idx: int) -> bool:
+        pos, offset = idx // 8, idx % 8
+        mask = 1 << offset
+        self.flags.seek(pos)
+        state = self.flags.read_byte()
+        return (state & mask) != 0
+
+    def wait_until(self, idx: int | Iterable[int], value: bool | Iterable[bool], fn = lambda: time.sleep(1e-3)) -> None:
+        if isinstance(idx, int) and isinstance(value, bool):
+            while self.get_flag(idx) != value:
+                fn()
+        else:
+            while sum(self.get_flag(i) != v for i, v in zip(idx, value)) > 0:
+                fn()
 
 class IPCChannel:
 
-    def __init__(self, payload_length: int, tag: str):
-        self.ipc = mmap.mmap(-1, 1 + payload_length, tag)
+    def __init__(self, size: int, tagname: str):
+        self.ipc = mmap.mmap(-1, size, tagname)
 
     def close(self) -> None:
         self.ipc.flush()
         self.ipc.close()
 
-    def is_put_locked(self) -> bool:
+    def put(self, payload: bytes) -> None:
         self.ipc.seek(0)
-        return 1 & self.ipc.read_byte()
-
-    def is_consume_locked(self) -> bool:
-        return not self.is_put_locked()
-
-    def set_lock(self, value: bool) -> None:
-        self.ipc.seek(0)
-        self.ipc.write(value.to_bytes(byteorder=sys.byteorder))
+        self.ipc.write(payload)
         self.ipc.flush()
 
-    def unlock_consume(self) -> None:
-        self.set_lock(True)
-
-    def unlock_put(self) -> None:
-        self.set_lock(False)
-
-    def lock_consume(self) -> None:
-        self.unlock_put()
-
-    def lock_put(self) -> None:
-        self.unlock_consume()
-
-    def put(self, payload: bytes) -> None:
-        self.ipc.seek(1)
-        self.ipc.write(payload)
-        self.unlock_consume()
-
-    def consume(self) -> bytes:
-        self.ipc.seek(1)
+    def take(self) -> bytes:
+        self.ipc.seek(0)
         payload = self.ipc.read(-1)
-        self.unlock_put()
         return payload
-
-    def put_blocking(self, *payload) -> None:
-        while self.is_put_locked():
-            pass
-        self.put(*payload)
-
-    def consume_blocking(self):
-        while self.is_consume_locked():
-            pass
-        return self.consume()
 
 class MappedIPCChannel(IPCChannel):
 
@@ -68,8 +68,8 @@ class MappedIPCChannel(IPCChannel):
         self.end = [self.start[i] + self.sizes[i] for i in range(len(self.sizes))] 
         super().__init__(sum(self.sizes), tag)
 
-    def consume(self):
-        payload = super().consume()
+    def take(self):
+        payload = super().take()
         if len(self.map) == 1:
             data = unpack(self.fmt_str, payload)
             if len(data) == 1:
@@ -88,38 +88,101 @@ class MappedIPCChannel(IPCChannel):
         super().put(pack(self.fmt_str, *payload))
 
 
-class ControllerIPC:
+class FLAGS:
 
-    INPUT = 'controller_input.ipc'
-    OUTPUT = 'controller_output.ipc'
+    REQUEST_GAME_STATE = 0
+    REQUEST_INPUT = 1
+    REQUEST_ACTION = 2
 
-    def __init__(self, map='4e'):
-        self.map = map
-        self.controller_input_channel = MappedIPCChannel(self.map, ControllerIPC.INPUT)
-        self.controller_output_channel = MappedIPCChannel(self.map, ControllerIPC.OUTPUT)
+    GAME_STATE_WRITTEN = 3
+    INPUT_WRITTEN = 4
+    ACTION_WRITTEN = 5
+
+    RESET = 6
+    IS_TRAINING = 7
+
+class ControllerIPC(IPCFlags):
+
+    INPUT_TAG = 'controller_input.ipc'
+    OUTPUT_TAG = 'controller_output.ipc'
+
+    def __init__(self, map: str | list[str]='4f', **kwargs):
+        super().__init__(**kwargs)
+        self.map: str | list[str] = map
+        self.controller_input_channel: MappedIPCChannel = MappedIPCChannel(self.map, ControllerIPC.INPUT_TAG)
+        self.controller_output_channel: MappedIPCChannel = MappedIPCChannel(self.map, ControllerIPC.OUTPUT_TAG)
+
+    def pop_input(self):
+        self.wait_until(FLAGS.INPUT_WRITTEN, True)
+        state = self.controller_input_channel.take()
+        # self.set_flag(FLAGS.INPUT_WRITTEN, False)
+        return state
+
+    def pop_action(self):
+        self.wait_until(FLAGS.ACTION_WRITTEN, True)
+        action = self.controller_output_channel.take()
+        self.set_flag(FLAGS.ACTION_WRITTEN, False)
+        return action
+
+    def write_input(self, *state: float):
+        # self.wait_until(FLAGS.REQUEST_INPUT, True)
+        self.controller_input_channel.put(*state)
+        self.set_flag(FLAGS.INPUT_WRITTEN, True)
 
     def write_action(self, *action: float):
+        self.wait_until(FLAGS.REQUEST_ACTION, True)
         self.controller_output_channel.put(*action)
+        self.set_flag(FLAGS.ACTION_WRITTEN, True)
 
-    def get_action(self):
-        return self.controller_output_channel.consume_blocking()
+    def request_input(self):
+        self.set_flag(FLAGS.REQUEST_INPUT, True)
+    
+    def request_action(self):
+        self.set_flag(FLAGS.REQUEST_ACTION, True)
 
-    def write_state(self, *state: float):
-        self.controller_input_channel.put_blocking(*state)
+    def block_input(self):
+        self.set_flag(FLAGS.REQUEST_INPUT, False)
+    
+    def block_action(self):
+        self.set_flag(FLAGS.REQUEST_ACTION, False)
 
-    def get_state(self):
-        return self.controller_input_channel.consume_blocking()
+class GameStateIPC(IPCFlags):
 
-class GameIPC:
+    GAME_STATE = 'game_state.ipc'
 
-    GAME = 'game.ipc'
-
-    def __init__(self, map=['3f', '3f', 'i']):
+    def __init__(self, map=['3f', '3f', '1i'], **kwargs):
+        super().__init__(**kwargs)
         self.map = map
-        self.game_ipc = MappedIPCChannel(map, GameIPC.GAME)
+        self.game_state_channel = MappedIPCChannel(map, GameStateIPC.GAME_STATE)
 
-    def get_state(self):
-        return self.game_ipc.consume_blocking()
+    def pop_game_state(self):
+        self.wait_until(FLAGS.GAME_STATE_WRITTEN, True)
+        game_state = self.game_state_channel.take()
+        self.set_flag(FLAGS.GAME_STATE_WRITTEN, False)
+        return game_state
 
-    def request_state(self):
-        self.game_ipc.unlock_put()
+    def request_game_state(self):
+        self.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+    
+    def block_game_state(self):
+        self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+
+
+# flags.set_flag(FLAGS.IS_TRAINING, False)
+def debug_flags():
+    flags = IPCFlags()
+    print(f'REQUEST_GAME_STATE: {flags.get_flag(FLAGS.REQUEST_GAME_STATE)}')
+    print(f'REQUEST_INPUT: {flags.get_flag(FLAGS.REQUEST_INPUT)}')
+    print(f'REQUEST_ACTION: {flags.get_flag(FLAGS.REQUEST_ACTION)}')
+    print(f'GAME_STATE_WRITTEN: {flags.get_flag(FLAGS.GAME_STATE_WRITTEN)}')
+    print(f'INPUT_WRITTEN: {flags.get_flag(FLAGS.INPUT_WRITTEN)}')
+    print(f'ACTION_WRITTEN: {flags.get_flag(FLAGS.ACTION_WRITTEN)}')
+    print(f'RESET: {flags.get_flag(FLAGS.RESET)}')
+    print(f'IS_TRAINING: {flags.get_flag(FLAGS.IS_TRAINING)}')
+    flags.flags.seek(0)
+    print(f'{flags.flags.read_byte()}')
+
+# debug_flags()
+# ipc = GameStateIPC()
+# ipc.set_flag(FLAGS.GAME_STATE_WRITTEN, True)
+# print(ipc.pop_game_state())

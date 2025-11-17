@@ -96,7 +96,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="GTAVDriver.cs" />
-    <Compile Include="IPCChannel.cs" />
+    <Compile Include="IPC.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
