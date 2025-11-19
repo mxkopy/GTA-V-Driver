@@ -10,17 +10,16 @@ from ipc import ControllerIPC, FLAGS
 class ControllerHandler(xinput.EventHandler):
 
     def __init__(self):
-        print("\nWaiting for controller")
         self.controller = self.get_connected_controller()
         super().__init__(self.controller)
-        self.set_filter(xinput.FILTER_NONE)
-        print("\nInitializing output pad")      
+        self.set_filter(xinput.FILTER_NONE)    
         self.output_pad = self.initialize_output_pad()
         self.controller_ipc_loop = ControllerIPC()
         self.controller_ipc_main = ControllerIPC()
         self.disconnected = False
 
     def get_connected_controller(self):
+        print("\nWaiting for controller")
         connected = xinput.get_connected()
         while len(list(filter(None, connected))) == 0:
             sleep(1)
@@ -29,6 +28,7 @@ class ControllerHandler(xinput.EventHandler):
         return self.controller
 
     def initialize_output_pad(self):
+        print("\nInitializing output pad")  
         self.output_pad = None
         while self.output_pad is None:
             try:

@@ -22,7 +22,7 @@ The idea is that the model might learn some key things from this information:
 The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The hope is to avoid 'LiDAR' methods (i.e. depth mapping and such). 
 
 # Dependencies
-* ScriptHookV.dll
+* ScriptHookV.dll (v3586.0 / 889.22)
 * PyTorch
 * VigEmBus
 * HidHide

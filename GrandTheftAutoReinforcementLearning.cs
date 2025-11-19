@@ -9,15 +9,16 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using IPC;
 
-public class GTAVDriver : Script
+public class GrandTheftAutoReinforcementLearning : Script
 {
     static readonly Vector3 AIRPORT = new Vector3(-1161.462f, -2584.786f, 13.505f);
 
     static GameIPC IPC = new GameIPC();
     static GameState State = new GameState();
 
-    public GTAVDriver()
+    public GrandTheftAutoReinforcementLearning()
     {
         Tick += OnTick;
         KeyDown += OnKeyDown;
@@ -44,8 +45,9 @@ public class GTAVDriver : Script
             }
             else
             {
-                Wait(10);
                 Reset();
+                //Yield();
+                Wait(10);
             }
         }
     }

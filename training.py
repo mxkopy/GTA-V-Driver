@@ -31,7 +31,6 @@ class AveragingWindow:
             self.buffer.pop(0)
 
     def collate(self, f=lambda tensor: tensor.to(dtype=T).mean(dim=0, keepdim=True)):
-        # print(torch.cat(self.buffer, dim=0))
         return f(torch.cat(self.buffer, dim=0))
     
     def reset(self):
@@ -88,7 +87,7 @@ critic_opt = torch.optim.AdamW(critic.parameters(), LR)
 
 replay_buffer = ReplayBuffer(n=N_TRANSITIONS)
 action_decay_window = AveragingWindow(maxlen=8)
-# visual_decay_window = AveragingWindow(maxlen=WINDOW_SIZE)
+# visual_decay_window = AveragingWindow(maxlen=8)
 
 random_direction = torch.distributions.Normal(torch.tensor([0, 0, 0.5, 0.5]), torch.tensor([1, 1, 0.5, 0.5]))
 print('Starting loop')

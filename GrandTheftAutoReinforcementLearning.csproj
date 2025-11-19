@@ -7,8 +7,8 @@
     <ProjectGuid>{A1E255D1-6977-4F2F-953E-A254DE4657E7}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>GTA_V_Driver</RootNamespace>
-    <AssemblyName>GTA V Driver</AssemblyName>
+    <RootNamespace>GTA-RL</RootNamespace>
+    <AssemblyName>GrandTheftAutoReinforcementLearning</AssemblyName>
     <TargetFrameworkVersion>v4.8.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
@@ -46,9 +46,10 @@
     <OutputPath>bin\Release\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>5</WarningLevel>
-    <PlatformTarget>x64</PlatformTarget>
+    <WarningLevel>3</WarningLevel>
+    <PlatformTarget>x86</PlatformTarget>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateSerializationAssemblies>Auto</GenerateSerializationAssemblies>
   </PropertyGroup>
   <PropertyGroup>
     <StartupObject />
@@ -77,9 +78,30 @@
   <PropertyGroup>
     <SignAssembly>false</SignAssembly>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Development|AnyCPU' ">
+    <OutputPath>bin\Dev\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <WarningLevel>3</WarningLevel>
+    <DebugType>pdbonly</DebugType>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Development|x64' ">
+    <OutputPath>bin\x64\Development\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <DebugType>pdbonly</DebugType>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <ErrorReport>prompt</ErrorReport>
+  </PropertyGroup>
   <ItemGroup>
     <Reference Include="ScriptHookVDotNet3">
-      <HintPath>..\..\SteamLibrary\steamapps\common\Grand Theft Auto V\ScriptHookVDotNet3.dll</HintPath>
+      <HintPath>.\ScriptHookVDotNet3.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
@@ -95,7 +117,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="GTAVDriver.cs" />
+    <Compile Include="GrandTheftAutoReinforcementLearning.cs" />
     <Compile Include="IPC.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
@@ -129,6 +151,16 @@
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <PostBuildEvent>move /Y "E:\GTA V Driver\GTA-V-Driver\GTA V Driver\bin\Release\GTA V Driver.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"</PostBuildEvent>
+    <PostBuildEvent>:: There's a way to read X:\\Steam\config\libraryfolders.vdf to get the game .exe's location, but I'm too lazy to build it out RN
+:: try {
+:: SET steamPath=$(Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam" -Name InstallPath)
+:: catch [ItemNotFoundException] {
+:: SET steamPath=$(Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Valve\Steam" -Name InstallPath)
+:: }
+
+if $(ConfigurationName) == Development (
+move /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+del "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ScriptHookVDotNet3.dll"
+)</PostBuildEvent>
   </PropertyGroup>
 </Project>

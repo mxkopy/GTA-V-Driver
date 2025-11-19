@@ -1,11 +1,9 @@
 import torch
-from ipc import GameStateIPC, ControllerIPC
-from model import IMG_RESOLUTION, T, DEVICE
+from ipc import GameStateIPC, ControllerIPC, FLAGS
 import bettercam
 import random
 import config
 from collections import namedtuple
-
 
 # The bettercam repo is kind of broken
 # TODO: Honestly I should look into how it works under the hood & just elide it as a dependency
@@ -18,12 +16,12 @@ def take_screenshot(sct: bettercam.BetterCam):
     img = sct.grab()
     while img is None:
         img = sct.grab()
-    img = torch.as_tensor(img, device=DEVICE)
-    img = img[:, :, :3].permute(2, 0, 1)
+    img = torch.as_tensor(img, device=config.device)
+    img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
     # img = torchvision.transforms.functional.rgb_to_grayscale(img)
-    img = img.to(device=DEVICE, dtype=torch.float16) / 255
-    img = torch.nn.functional.interpolate(img.unsqueeze(0), config.IMAGE_SIZE[1:], mode='bilinear', antialias=True).reshape(*config.IMAGE_SIZE)
-    img = (255 * img).to(device=DEVICE, dtype=torch.uint8)
+    img = img.to(dtype=torch.float16) / 255
+    img = torch.nn.functional.interpolate(img, config.state_sizes['image'][1:], mode='bilinear', antialias=True)
+    img = (255 * img).to(dtype=torch.uint8)
     return img
 
 # STATE_SIZES = {
@@ -31,30 +29,32 @@ def take_screenshot(sct: bettercam.BetterCam):
 #     'controller': config.CONTROLLER_SIZE,
 #     'camera_direction': config.CAMERA_DIRECTION_SIZE,
 #     'velocity': config.VELOCITY_SIZE,
-#     'forward_direction': config.FORWARD_DIRECTION_SIZE
+#     'forward_direction': config.FORWARD_DIRECTION_SIZE,
+#     'damage': config.DAMAGE_SIZE
 # }
 
-State = namedtuple('State', tuple(config.state_sizes.keys()))
+from typing import Iterable, TypeVarTuple, TypeAlias
 
-class State(State):
+class TensorTuple[T: tuple[torch.Tensor, ...]]:
 
-    def cat(states: list[State] | tuple[State]) -> State:
-        return State(
-            *(torch.cat(tuple(state.__getattribute__(x) for state in states)) for x in State._fields) 
+    def cat(states: Iterable[T]) -> T:
+        assert all(len(state) for state in states)
+        return states[0].__class__(
+            *(torch.cat(tuple(tuple.__getitem__(state, i) for state in states)) for i in range(len(states[0])))
         )
 
-    def __add__(self, other: State) -> State:
+    def __add__(self, other: T) -> T:
         return self.__class__(
             *(torch.cat((s, o)) for s, o in zip(self, other))
         )
     
-    def __radd__(self, other: int | None | State):
-        if isinstance(other, State):
+    def __radd__(self, other: int | None | T):
+        if isinstance(other, T):
             return self.__class__(*other).__add__(self)
         else:
             return self
     
-    def __getitem__(self, idx: int | slice | tuple[slice] | list[slice]):
+    def __getitem__(self, idx: int | slice | Iterable[slice]) -> T:
         if isinstance(idx, int):
             return self.__class__( *(x[idx:idx+1, ...] for x in self) )
         elif isinstance(idx, slice):
@@ -62,23 +62,41 @@ class State(State):
         else:
             return self.__class__( *(x[idx] for x in self))
 
+    def to(self, **kwargs) -> T:
+        return self.__class__(
+            *(x.to(**kwargs) for x in self)
+        )
+
+    def dynamic_shapes(self, shapes=torch.export.ShapesCollection()):
+        for state in self:
+            shapes[state] = {0: torch.export.Dim.DYNAMIC}
+        return shapes
+
+StateTuple = namedtuple('State', tuple(config.state_sizes.keys()))
+class State(StateTuple, TensorTuple):
+
     def rand(batch_size = 1):
         return State(
             *(torch.rand(batch_size, *config.state_sizes[key]) for key in State._fields)
         )
+    
+    def size(self):
+        return tuple(x.size() for x in self)
 
-    def size_of(self, key):
-        return config.state_sizes[key]
+# State = 
+# state = State.cat( [State.rand(), State.rand(), State.rand()])
+# print(state)
+# exit()
 
-type Action = torch.tensor
+type Action = torch.Tensor
 type NextState = State
-type Reward = torch.tensor
-type Final = torch.tensor
+type Reward = torch.Tensor
+type Final = torch.Tensor
 
-Transition = namedtuple('Transition', ('state', 'action', 'nextstate', 'reward', 'final'))
-class Transition(Transition):
+TransitionTuple = namedtuple('Transition', ('state', 'action', 'nextstate', 'reward', 'final'))
+class Transition(TransitionTuple):
 
-    def cat(transitions: list[Transition] | tuple[Transition]) -> Transition:
+    def cat(transitions: Iterable[TransitionTuple]) -> TransitionTuple:
         return Transition(
             State.cat(tuple(transition.state for transition in transitions)),
             torch.cat(tuple(transition.action for transition in transitions)),
@@ -87,7 +105,10 @@ class Transition(Transition):
             torch.cat(tuple(transition.final for transition in transitions))
         )
 
-    def __add__(self, other: Transition):
+    def to(self, **kwargs) -> TransitionTuple:
+        return Transition(*(x.to(**kwargs) for x in self))
+
+    def __add__(self, other: TransitionTuple):
         return self.__class__(
             self.state + other.state,
             torch.cat((self.action, other.action)),
@@ -96,7 +117,7 @@ class Transition(Transition):
             torch.cat((self.final, other.final))
         )
 
-    def __radd__(self, other: int | None | Transition):
+    def __radd__(self, other: int | None | TransitionTuple):
         if isinstance(other, Transition):
             return self.__class__(*other).__add__(self)
         else:
@@ -150,17 +171,26 @@ class Environment:
         return State.rand()
 
     def observe(self) -> State:
-        screenshot: torch.tensor = take_screenshot(self.sct)
+        screenshot: torch.Tensor = take_screenshot(self.sct)
         self.game_ipc.request_game_state()
-        game_state: list[torch.tensor] = [torch.tensor(x).unsqueeze(0) for x in self.game_ipc.pop_game_state()]
+        game_state: list[torch.Tensor] = [torch.tensor(x).unsqueeze(0) for x in self.game_ipc.pop_game_state()]
         self.game_ipc.block_game_state()
-        controller_state: torch.tensor = torch.tensor(self.controller_ipc.pop_input()).unsqueeze(0)
-        return State(screenshot, controller_state, *game_state)
+        controller_state: torch.Tensor = torch.tensor(self.controller_ipc.pop_input()).unsqueeze(0)
+        return State(screenshot, controller_state, *game_state) 
 
-    def act(self, action: torch.tensor) -> State:
+    def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:
         self.controller_ipc.write_action(*action.reshape(-1).tolist())
-        return self.observe()
+        nextstate: NextState = self.observe()
+        reward: Reward = torch.dot(nextstate.velocity.view(-1), nextstate.camera_direction.view(-1)).unsqueeze(0)
+        return (nextstate, reward, nextstate.damage > 0)
     
+    def pause_training(self):
+        self.game_ipc.request_game_state()
+        self.game_ipc.set_flag(FLAGS.IS_TRAINING, False)
+
+    def resume_training(self):
+        self.game_ipc.block_game_state()
+        self.game_ipc.set_flag(FLAGS.IS_TRAINING, True)
 # def random_transition():
 #     return Transition(State.rand(), torch.rand(1, 4), State.rand(), torch.rand(1, 1), torch.rand(1, 1))
 

@@ -1,0 +1,14 @@
+dtype: float32
+device: cuda
+
+state:
+  image:
+    size: [3, 360, 640]
+  controller:
+    size: 4
+  camera_direction:
+    size: 3
+  velocity:
+    size: 3
+  forward_direction:
+    size: 3

@@ -78,7 +78,8 @@ class MappedIPCChannel(IPCChannel):
                 return data
         else:
             data = [unpack(f'@{self.map[i]}', payload[self.start[i]:self.end[i]]) for i in range(len(self.sizes))]
-            return [x[0] if len(x) == 1 else x for x in data]
+            # return [x[0] if len(x) == 1 else x for x in data]
+            return data
 
     def put(self, *payload):
         if len(self.map) == 1:
@@ -167,8 +168,12 @@ class GameStateIPC(IPCFlags):
     def block_game_state(self):
         self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
 
+    def debug_write_game_state(self, state: tuple[list[float], list[float], list[int]]):
+        self.wait_until(FLAGS.REQUEST_GAME_STATE, True)
+        self.game_state_channel.put(*state)
+        self.set_flag(FLAGS.GAME_STATE_WRITTEN, True)
 
-# flags.set_flag(FLAGS.IS_TRAINING, False)
+
 def debug_flags():
     flags = IPCFlags()
     print(f'REQUEST_GAME_STATE: {flags.get_flag(FLAGS.REQUEST_GAME_STATE)}')
@@ -181,6 +186,26 @@ def debug_flags():
     print(f'IS_TRAINING: {flags.get_flag(FLAGS.IS_TRAINING)}')
     flags.flags.seek(0)
     print(f'{flags.flags.read_byte()}')
+
+# debug_flags()
+# exit()
+
+if __name__ == '__main__':
+    debug_flags()
+    # ipc = GameStateIPC()
+    # while True:
+    #     if ipc.get_flag(FLAGS.IS_TRAINING):
+    #         state = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0,]
+    #         print('writing game state')
+    #         ipc.debug_write_game_state(state)
+    #         print('wrote game state')
+    #         while ipc.get_flag(FLAGS.GAME_STATE_WRITTEN) and ipc.get_flag(FLAGS.IS_TRAINING):
+    #             time.sleep(0)
+    #     else:
+    #         print('not training')
+
+
+# flags.set_flag(FLAGS.IS_TRAINING, False)
 
 # debug_flags()
 # ipc = GameStateIPC()
