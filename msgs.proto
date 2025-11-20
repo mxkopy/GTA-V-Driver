@@ -1,0 +1,18 @@
+message ControllerState {
+    optional float left_joystick_x = 1;
+    optional float left_joystick_y = 2;
+    optional float left_trigger = 3;
+    optional float right_trigger = 4;
+}
+
+message Vector3 {
+    optional float x = 1;
+    optional float y = 2;
+    optional float z = 3;
+}
+
+message GameState {
+    optional Vector3 camera_direction = 1;
+    optional Vector3 velocity = 2;
+    optional fixed32 damage = 3;
+}

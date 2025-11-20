@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import copy
 import config
+import gc
 from ipc import FLAGS
 from environment import Environment, ReplayBuffer, State, Action, Reward, NextState, Final, Transition
 
@@ -40,7 +41,7 @@ class DeterministicPolicyGradient:
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters())
         self.critic_optimizer = torch.optim.AdamW(self.critic.parameters())
 
-    def get_action(self, state: State, noise_scale: float = 1.0) -> Action:
+    def compute_action(self, state: State, noise_scale: float = 1.0) -> Action:
         action: Action = self.actor(state)
         noise: torch.Tensor = self.noise_distribution.sample(action.size()) * noise_scale
         noise: torch.Tensor = noise.to(device=action.device)
@@ -52,24 +53,24 @@ class DeterministicPolicyGradient:
         return Transition(state, action, reward, nextstate, final).to(device=action.device)
 
     def run_episode(self, steps: int = 1000, offset: int=0):
+        gc.collect()
+        torch.cuda.empty_cache()
         n = offset
-        print('getting first observation')
         state: State = self.environment.observe()
         final: bool = False
-        print('running episode')
-        while n < steps + offset and not final:
-            n += 1
-            state: State = state.to(device=config.device)
-            action: Action = self.get_action(state)
-            transition: Transition = self.act(state, action)
-            self.replay_buffer += transition.to(device='cpu')
-            state: State = transition.nextstate
-            final: bool = transition.final.item()
+        with torch.no_grad(), torch.autocast(device_type=config.device):
+            while n < steps + offset and not final:
+                n += 1
+                state: State = state.to(device=config.device)
+                action: Action = self.compute_action(state)
+                transition: Transition = self.act(state, action)
+                self.replay_buffer += transition.to(device='cpu')
+                state: State = transition.nextstate
+                final: bool = transition.final.item()
         
 
     def update_critic(self, batch):
-        print('updating critic')
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type='cuda'):
             target: torch.Tensor = batch.reward + (~batch.final) * self.gamma * self.critic_target(batch.nextstate, self.actor_target(batch.nextstate))
         self.critic_optimizer.zero_grad()
         critic_loss: torch.Tensor = (self.critic(batch.state, batch.action) - target).square().mean(dim=0).sum()
@@ -77,9 +78,7 @@ class DeterministicPolicyGradient:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
         self.critic_optimizer.step()
 
-
     def update_actor(self, batch):
-        print('updating actor')
         self.actor_optimizer.zero_grad()
         actor_loss: torch.Tensor = -self.critic(batch.state, self.actor(batch.state)).mean(dim=0).sum()
         actor_loss.backward()
@@ -94,6 +93,8 @@ class DeterministicPolicyGradient:
         target.load_state_dict(target_state_dict)
         
     def optimize_step(self):
+        gc.collect()
+        torch.cuda.empty_cache()
         self.environment.pause_training()
         batch: Transition = self.replay_buffer.sample(self.batch_size).to(device=config.device)
         self.update_critic(batch)
@@ -231,14 +232,11 @@ class DriverCriticModel(DriverModelBase):
             dynamic_shapes=dynamic_shapes
         ).module()
 
-import gc
-actor, critic = DriverActorModel().to(device=config.device, dtype=torch.float32).jit(), DriverCriticModel().to(device=config.device, dtype=torch.float32).jit()
-
-ddpg = DeterministicPolicyGradient(actor, critic)
-ddpg.environment.game_ipc.set_flag(FLAGS.IS_TRAINING, True)
-while True:
-    gc.collect()
-    torch.cuda.empty_cache()
-    with torch.no_grad():
+def train(ddpg: DeterministicPolicyGradient):
+    import gc
+    ddpg.environment.game_ipc.set_flag(FLAGS.IS_TRAINING, True)
+    while True:
         ddpg.run_episode()
-    ddpg.optimize_step()
+        gc.collect()
+        torch.cuda.empty_cache()
+        ddpg.optimize_step()

@@ -1,16 +1,29 @@
 import mmap
 from typing import Iterable
-import sys
 import time
-from struct import pack, unpack, calcsize
-
+import msgs_pb2
+from google.protobuf.message import Message
+from google.protobuf.descriptor import FieldDescriptor
 N_FLAGS = 8
 FLAGS_TAG = "flags.ipc"
+IPC_SLEEP_DURATION = 1e-3
+
+class FLAGS:
+
+    REQUEST_GAME_STATE = 0
+    REQUEST_INPUT = 1
+    REQUEST_ACTION = 2
+
+    GAME_STATE_WRITTEN = 3
+    INPUT_WRITTEN = 4
+    ACTION_WRITTEN = 5
+
+    RESET = 6
+    IS_TRAINING = 7
 
 class IPCFlags:
 
-    def __init__(self, n: int = N_FLAGS, tagname: str = FLAGS_TAG):
-        self.flags = mmap.mmap(-1, -(n // -8), tagname)
+    flags = mmap.mmap(-1, -(N_FLAGS // -8), FLAGS_TAG)
 
     def set_flag(self, idx: int, value: bool) -> None:
         pos, offset = idx // 8, idx % 8
@@ -29,7 +42,7 @@ class IPCFlags:
         state = self.flags.read_byte()
         return (state & mask) != 0
 
-    def wait_until(self, idx: int | Iterable[int], value: bool | Iterable[bool], fn = lambda: time.sleep(1e-3)) -> None:
+    def wait_until(self, idx: int | Iterable[int], value: bool | Iterable[bool], fn = lambda: time.sleep(IPC_SLEEP_DURATION)) -> None:
         if isinstance(idx, int) and isinstance(value, bool):
             while self.get_flag(idx) != value:
                 fn()
@@ -37,7 +50,7 @@ class IPCFlags:
             while sum(self.get_flag(i) != v for i, v in zip(idx, value)) > 0:
                 fn()
 
-class IPCChannel:
+class Channel:
 
     def __init__(self, size: int, tagname: str):
         self.ipc = mmap.mmap(-1, size, tagname)
@@ -46,133 +59,122 @@ class IPCChannel:
         self.ipc.flush()
         self.ipc.close()
 
-    def put(self, payload: bytes) -> None:
+    def push_nbl(self, payload: bytes) -> None:
         self.ipc.seek(0)
         self.ipc.write(payload)
         self.ipc.flush()
 
-    def take(self) -> bytes:
+    def pop_nbl(self) -> bytes:
         self.ipc.seek(0)
         payload = self.ipc.read(-1)
         return payload
 
-class MappedIPCChannel(IPCChannel):
+class MappedChannel(Channel):
 
-    def __init__(self, map: str | list[str], tag: str):
-        if isinstance(map, str):
-            map = [map]
-        self.map = map
-        self.fmt_str = '@'+ ''.join(map)
-        self.sizes = [calcsize('@' + fmt) for fmt in map]
-        self.start = [sum(self.sizes[:i]) for i in range(len(self.sizes))]
-        self.end = [self.start[i] + self.sizes[i] for i in range(len(self.sizes))] 
-        super().__init__(sum(self.sizes), tag)
+    N_BYTES: int
+    MSG_TYPE: type[Message]
 
-    def take(self):
-        payload = super().take()
-        if len(self.map) == 1:
-            data = unpack(self.fmt_str, payload)
-            if len(data) == 1:
-                return data[0]
-            else:
-                return data
-        else:
-            data = [unpack(f'@{self.map[i]}', payload[self.start[i]:self.end[i]]) for i in range(len(self.sizes))]
-            # return [x[0] if len(x) == 1 else x for x in data]
-            return data
+    def __init__(self, tagname: str):
+        super().__init__(self.__class__.N_BYTES, tagname=tagname)
 
-    def put(self, *payload):
-        if len(self.map) == 1:
-            super().put(pack(self.fmt_str, *payload))
-        payload = [[p] if not isinstance(p, (list, tuple)) else p for p in payload]
-        payload = sum(payload, start=[])
-        super().put(pack(self.fmt_str, *payload))
+    def push_nbl(self, payload: Message):
+        assert payload.__class__ == self.__class__.MSG_TYPE
+        msg: bytes = payload.SerializeToString()
+        super().push_nbl(msg)
 
+    def pop_nbl(self) -> Message:
+        msg: bytes = super().pop_nbl()
+        return self.__class__.MSG_TYPE.FromString(msg)
 
-class FLAGS:
+class StateQueue(IPCFlags, MappedChannel):
 
-    REQUEST_GAME_STATE = 0
-    REQUEST_INPUT = 1
-    REQUEST_ACTION = 2
+    READY_TO_READ: int
+    NEW_MESSAGE_WRITTEN: int
+    TAGNAME: str
 
-    GAME_STATE_WRITTEN = 3
-    INPUT_WRITTEN = 4
-    ACTION_WRITTEN = 5
+    N_BYTES: int
+    MSG_TYPE: type[Message]
 
-    RESET = 6
-    IS_TRAINING = 7
+    def __init__(self):
+        IPCFlags.__init__(self)
+        MappedChannel.__init__(self, tagname=self.__class__.TAGNAME)
 
-class ControllerIPC(IPCFlags):
+    def push(self, state: Message):
+        self.wait_until(self.__class__.READY_TO_READ, True)
+        self.push_nbl(state)
+        self.set_flag(self.__class__.NEW_MESSAGE_WRITTEN, True)
 
-    INPUT_TAG = 'controller_input.ipc'
-    OUTPUT_TAG = 'controller_output.ipc'
-
-    def __init__(self, map: str | list[str]='4f', **kwargs):
-        super().__init__(**kwargs)
-        self.map: str | list[str] = map
-        self.controller_input_channel: MappedIPCChannel = MappedIPCChannel(self.map, ControllerIPC.INPUT_TAG)
-        self.controller_output_channel: MappedIPCChannel = MappedIPCChannel(self.map, ControllerIPC.OUTPUT_TAG)
-
-    def pop_input(self):
-        self.wait_until(FLAGS.INPUT_WRITTEN, True)
-        state = self.controller_input_channel.take()
-        # self.set_flag(FLAGS.INPUT_WRITTEN, False)
+    def pop(self) -> Message:
+        self.wait_until(self.__class__.NEW_MESSAGE_WRITTEN, True)
+        state: Message = self.pop_nbl()
+        self.set_flag(self.__class__.NEW_MESSAGE_WRITTEN, False)
         return state
-
-    def pop_action(self):
-        self.wait_until(FLAGS.ACTION_WRITTEN, True)
-        action = self.controller_output_channel.take()
-        self.set_flag(FLAGS.ACTION_WRITTEN, False)
-        return action
-
-    def write_input(self, *state: float):
-        # self.wait_until(FLAGS.REQUEST_INPUT, True)
-        self.controller_input_channel.put(*state)
-        self.set_flag(FLAGS.INPUT_WRITTEN, True)
-
-    def write_action(self, *action: float):
-        self.wait_until(FLAGS.REQUEST_ACTION, True)
-        self.controller_output_channel.put(*action)
-        self.set_flag(FLAGS.ACTION_WRITTEN, True)
-
-    def request_input(self):
-        self.set_flag(FLAGS.REQUEST_INPUT, True)
     
-    def request_action(self):
-        self.set_flag(FLAGS.REQUEST_ACTION, True)
-
-    def block_input(self):
-        self.set_flag(FLAGS.REQUEST_INPUT, False)
+    def __xor__(self, update: Message):
+        current_state: Message = self.pop_nbl()
+        current_state.MergeFrom(update)
+        return current_state
     
-    def block_action(self):
-        self.set_flag(FLAGS.REQUEST_ACTION, False)
+    def __ixor__(self, *update):
+        updated_state = self ^ update
+        self.push_nbl(updated_state)
+        return self
 
-class GameStateIPC(IPCFlags):
+class FixedSizeState(type):
 
-    GAME_STATE = 'game_state.ipc'
+    def default_init_dict(descriptor: FieldDescriptor):
+        descriptor.fields: list[FieldDescriptor]
+        return {
+            field.name: 0 if field.message_type is None else FixedSizeState.default_init_dict(field.message_type)
+            for field in descriptor.fields
+        }
 
-    def __init__(self, map=['3f', '3f', '1i'], **kwargs):
-        super().__init__(**kwargs)
-        self.map = map
-        self.game_state_channel = MappedIPCChannel(map, GameStateIPC.GAME_STATE)
+    def init(self: Message):
+        self.CopyFrom(self.__class__(**FixedSizeState.default_init_dict(self.DESCRIPTOR)))
+        return self
 
-    def pop_game_state(self):
-        self.wait_until(FLAGS.GAME_STATE_WRITTEN, True)
-        game_state = self.game_state_channel.take()
-        self.set_flag(FLAGS.GAME_STATE_WRITTEN, False)
-        return game_state
+    def tolist(self: Message):
+        return [value if not isinstance(value, Message) else FixedSizeState.tolist(value) for _, value in self.ListFields()]
 
-    def request_game_state(self):
-        self.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+    def __init__(cls, *args, **kwargs):
+        cls.MSG_TYPE.init = FixedSizeState.init
+        cls.MSG_TYPE.tolist = FixedSizeState.tolist
+        cls.N_BYTES = cls.MSG_TYPE(**FixedSizeState.default_init_dict(cls.MSG_TYPE.DESCRIPTOR)).ByteSize()
+
+class VirtualControllerState(StateQueue, metaclass=FixedSizeState):
+
+    READY_TO_READ = FLAGS.REQUEST_ACTION
+    NEW_MESSAGE_WRITTEN = FLAGS.ACTION_WRITTEN
+    TAGNAME = 'virtual_controller.ipc'
+    MSG_TYPE = msgs_pb2.ControllerState
+
+    # def tolist(self) -> list:
+        # return [msg.left_joystick_x, msg.left_joystick_y, msg.left_trigger, msg.right_trigger]
     
-    def block_game_state(self):
-        self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+class PhysicalControllerState(StateQueue, metaclass=FixedSizeState):
 
-    def debug_write_game_state(self, state: tuple[list[float], list[float], list[int]]):
-        self.wait_until(FLAGS.REQUEST_GAME_STATE, True)
-        self.game_state_channel.put(*state)
-        self.set_flag(FLAGS.GAME_STATE_WRITTEN, True)
+    READY_TO_READ = FLAGS.REQUEST_INPUT
+    NEW_MESSAGE_WRITTEN = FLAGS.INPUT_WRITTEN
+    TAGNAME = 'physical_controller.ipc'
+    MSG_TYPE = msgs_pb2.ControllerState
 
+    # push = VirtualControllerState.push
+    # pop = VirtualControllerState.pop
+
+
+class GameState(StateQueue, metaclass=FixedSizeState):
+
+    READY_TO_READ = FLAGS.REQUEST_GAME_STATE
+    NEW_MESSAGE_WRITTEN = FLAGS.GAME_STATE_WRITTEN
+    TAGNAME = 'game_state.ipc'
+    MSG_TYPE = msgs_pb2.GameState
+
+    # def push(self, x: float, y: float, lt: float, rt: float):
+    #     msg = self.MSG_TYPE(left_joystick_x=x, left_joystick_y=y, left_trigger=lt, right_trigger=rt)
+    #     super().push(msg)
+
+gs = GameState().MSG_TYPE().init().tolist()
+print(list(gs))
 
 def debug_flags():
     flags = IPCFlags()
@@ -192,7 +194,7 @@ def debug_flags():
 
 if __name__ == '__main__':
     debug_flags()
-    # ipc = GameStateIPC()
+    # ipc = GameIPC()
     # while True:
     #     if ipc.get_flag(FLAGS.IS_TRAINING):
     #         state = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0,]
@@ -200,14 +202,6 @@ if __name__ == '__main__':
     #         ipc.debug_write_game_state(state)
     #         print('wrote game state')
     #         while ipc.get_flag(FLAGS.GAME_STATE_WRITTEN) and ipc.get_flag(FLAGS.IS_TRAINING):
-    #             time.sleep(0)
+    #             time.sleep(1e-3)
     #     else:
     #         print('not training')
-
-
-# flags.set_flag(FLAGS.IS_TRAINING, False)
-
-# debug_flags()
-# ipc = GameStateIPC()
-# ipc.set_flag(FLAGS.GAME_STATE_WRITTEN, True)
-# print(ipc.pop_game_state())

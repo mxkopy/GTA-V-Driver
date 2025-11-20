@@ -1,8 +1,10 @@
 import vgamepad as vg
 import XInput as xinput
 import math
+import msgs_pb2
 from time import sleep
-from ipc import ControllerIPC, FLAGS
+from ipc import VirtualControllerState, PhysicalControllerState, FLAGS
+
 
 # Performs virtual input actions & allows polling of controller state
 # TODO: Run this is another process so you don't have to restart the game 
@@ -11,12 +13,11 @@ class ControllerHandler(xinput.EventHandler):
 
     def __init__(self):
         self.controller = self.get_connected_controller()
+        self.output_pad = self.initialize_output_pad()
         super().__init__(self.controller)
         self.set_filter(xinput.FILTER_NONE)    
-        self.output_pad = self.initialize_output_pad()
-        self.controller_ipc_loop = ControllerIPC()
-        self.controller_ipc_main = ControllerIPC()
-        self.disconnected = False
+        self.virtual_controller_state = VirtualControllerState()
+        self.physical_controller_state = PhysicalControllerState()
 
     def get_connected_controller(self):
         print("\nWaiting for controller")
@@ -51,16 +52,22 @@ class ControllerHandler(xinput.EventHandler):
             self.output_pad.right_joystick_float(event.x, event.y)
             self.output_pad.update()
         if event.stick == xinput.LEFT:
-            self.update()
+            self.physical_controller_state ^= msgs_pb2.ControllerState(left_joystick_x=event.x, left_joystick_y=event.y)
+            # TODO: let's assume we're working with lists or tuples outside of ipc.py so we can use this prettier syntax again
+            # self.physical_controller_state ^= (event.x, event.y, None, None)
 
     def process_connection_event(self, event):
-        if event.type == xinput.EVENT_DISCONNECTED:
-            self.disconnected = True
-        if event.type == xinput.EVENT_CONNECTED:
-            self.disconnected = False
+        pass
+        # if event.type == xinput.EVENT_DISCONNECTED:
+            # self.physical_controller_state ^= (0.0, 0.0, 0.0, 0.0)
 
-    def process_trigger_event(self, event):
-        self.update()
+    def process_trigger_event(self, event: xinput.Event):
+        if event.type == xinput.TRIGGER_LEFT:
+            self.physical_controller_state ^= msgs_pb2.ControllerState(left_trigger=event.value)
+            # self.physical_controller_state ^= (None, None, event.value, None)
+        if event.type == xinput.TRIGGER_RIGHT:
+            self.physical_controller_state ^= msgs_pb2.ControllerState(right_trigger=event.value)
+            # self.physical_controller_state ^= (None, None, None, event.value)
 
     def clamp(x: float, min_val: float=-1, max_val: float=1):
         return min(max(0 if math.isnan(x) else x, min_val), max_val)
@@ -68,31 +75,27 @@ class ControllerHandler(xinput.EventHandler):
     def clamp_controller(x: float, y: float, lt: float, rt: float):
         return ControllerHandler.clamp(x), ControllerHandler.clamp(y), ControllerHandler.clamp(lt, min_val=0), ControllerHandler.clamp(rt, min_val=0)
 
-    def update(self):
-        if self.disconnected:
-            self.controller_ipc_main.write_input(0.0, 0.0, 0.0, 0.0)
-        else:
-            xinput_state = xinput.get_state(self.controller)
-            state = xinput.get_thumb_values(xinput_state)[0] + xinput.get_trigger_values(xinput_state)
-            self.controller_ipc_main.write_input(*state)
-
-    def act(self, x: float, y: float, lt: float, rt: float):
+    def virtual_controller_update(self, x: float, y: float, lt: float, rt: float):
         self.output_pad.left_joystick_float(ControllerHandler.clamp(x), ControllerHandler.clamp(y))
         self.output_pad.left_trigger_float(ControllerHandler.clamp(lt, min_val=0))
         self.output_pad.right_trigger_float(ControllerHandler.clamp(rt, min_val=0))
         self.output_pad.update()
 
-    def perform_action(self):
-        self.act(*self.controller_ipc_loop.pop_action())
-
-    def start_thread():
-        gamepad_thread = ControllerHandler()
-        xinput.GamepadThread(gamepad_thread)
+    def virtual_controller_update_thread(self):
         while True:
-            # gamepad_thread.update()
-            # gamepad_thread.perform_action()
-            # if gamepad_thread.controller_ipc.get_flag(FLAGS.ACTION_WRITTEN):
-            gamepad_thread.perform_action()
+            action = self.virtual_controller_state.pop().tolist()
+            self.virtual_controller_update(*action)
+
+    def physical_controller_update_thread(self, exit=True):
+        controller_handler = ControllerHandler()
+        xinput.GamepadThread(controller_handler)
+        while not exit:
+            pass
 
 if __name__ == '__main__':
-    ControllerHandler.start_thread()
+    import sys
+    if sys._is_gil_enabled():
+        print("Warning: running controller loop with GIL")
+    controller_handler = ControllerHandler()
+    controller_handler.physical_controller_update_thread()
+    controller_handler.virtual_controller_update_thread()

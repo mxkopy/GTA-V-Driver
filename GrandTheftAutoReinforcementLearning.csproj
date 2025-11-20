@@ -125,6 +125,9 @@
     <None Include="app.config" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Protobuf">
+      <Version>3.33.1</Version>
+    </PackageReference>
     <PackageReference Include="hidlibrary" PrivateAssets="all">
       <Version>3.3.40</Version>
     </PackageReference>
@@ -162,5 +165,8 @@ if $(ConfigurationName) == Development (
 move /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
 del "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ScriptHookVDotNet3.dll"
 )</PostBuildEvent>
+  </PropertyGroup>
+  <PropertyGroup>
+    <PreBuildEvent>E:\protoc\bin\protoc.exe --proto_path=$(ProjectDir) --csharp_out=$(ProjectDir) --python_out=$(ProjectDir) msgs.proto</PreBuildEvent>
   </PropertyGroup>
 </Project>

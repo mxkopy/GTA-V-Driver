@@ -1,9 +1,13 @@
 import torch
-from ipc import GameStateIPC, ControllerIPC, FLAGS
 import bettercam
 import random
 import config
+import msgs_pb2
+from google.protobuf.message import Message
 from collections import namedtuple
+from typing import Iterable, TypeVarTuple, TypeAlias
+from ipc import GameState, VirtualControllerState, PhysicalControllerState, FLAGS
+
 
 # The bettercam repo is kind of broken
 # TODO: Honestly I should look into how it works under the hood & just elide it as a dependency
@@ -12,7 +16,7 @@ CupyProcessor.process_cvtcolor = lambda self, image: image
 
 # Amazing one-liner to visualize stuff
 # Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
-def take_screenshot(sct: bettercam.BetterCam):
+def take_screenshot(sct: bettercam.BetterCam) -> torch.Tensor:
     img = sct.grab()
     while img is None:
         img = sct.grab()
@@ -24,16 +28,7 @@ def take_screenshot(sct: bettercam.BetterCam):
     img = (255 * img).to(dtype=torch.uint8)
     return img
 
-# STATE_SIZES = {
-#     'image': config.IMAGE_SIZE,
-#     'controller': config.CONTROLLER_SIZE,
-#     'camera_direction': config.CAMERA_DIRECTION_SIZE,
-#     'velocity': config.VELOCITY_SIZE,
-#     'forward_direction': config.FORWARD_DIRECTION_SIZE,
-#     'damage': config.DAMAGE_SIZE
-# }
 
-from typing import Iterable, TypeVarTuple, TypeAlias
 
 class TensorTuple[T: tuple[torch.Tensor, ...]]:
 
@@ -83,11 +78,6 @@ class State(StateTuple, TensorTuple):
     def size(self):
         return tuple(x.size() for x in self)
 
-# State = 
-# state = State.cat( [State.rand(), State.rand(), State.rand()])
-# print(state)
-# exit()
-
 type Action = torch.Tensor
 type NextState = State
 type Reward = torch.Tensor
@@ -123,7 +113,7 @@ class Transition(TransitionTuple):
         else:
             return self
 
-    def __getitem__(self, idx: int | slice | tuple[slice] | list[slice]):
+    def __getitem__(self, idx: int | slice | Iterable[slice]):
         if isinstance(idx, int):
             return self.__class__( *(x[idx:idx+1, ...] for x in self) )
         elif isinstance(idx, slice):
@@ -160,37 +150,40 @@ class ReplayBuffer:
 class Environment:
 
     def __init__(self):
-        self.game_ipc = GameStateIPC()
-        self.controller_ipc = ControllerIPC()
+        self.game_state = GameState()
+        self.physical_controller_state = PhysicalControllerState()
+        self.virtual_controller_state = VirtualControllerState()
         self.sct = bettercam.create(device_idx=0, nvidia_gpu=True)
-        self.game_ipc.request_game_state()
-        self.controller_ipc.request_input()
-        self.controller_ipc.request_action()
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+        self.physical_controller_state.set_flag(FLAGS.REQUEST_INPUT, True)
+        self.virtual_controller_state.set_flag(FLAGS.REQUEST_ACTION, True)
     
     def debug_observe(self) -> State:
         return State.rand()
 
     def observe(self) -> State:
         screenshot: torch.Tensor = take_screenshot(self.sct)
-        self.game_ipc.request_game_state()
-        game_state: list[torch.Tensor] = [torch.tensor(x).unsqueeze(0) for x in self.game_ipc.pop_game_state()]
-        self.game_ipc.block_game_state()
-        controller_state: torch.Tensor = torch.tensor(self.controller_ipc.pop_input()).unsqueeze(0)
-        return State(screenshot, controller_state, *game_state) 
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+        game_state: msgs_pb2.GameState = self.game_state.pop()
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+        physical_controller_state: msgs_pb2.ControllerState = self.physical_controller_state.pop()        
+        physical_controller_state: torch.Tensor = torch.tensor(physical_controller_state.tolist()).unsqueeze(0)
+        game_state = (torch.tensor([x] if not isinstance(x, list) else x).unsqueeze(0) for x in game_state.tolist())
+        return State(screenshot, physical_controller_state, *game_state)
 
     def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:
-        self.controller_ipc.write_action(*action.reshape(-1).tolist())
+        self.virtual_controller_state.push(*action.reshape(-1).tolist())
         nextstate: NextState = self.observe()
         reward: Reward = torch.dot(nextstate.velocity.view(-1), nextstate.camera_direction.view(-1)).unsqueeze(0)
         return (nextstate, reward, nextstate.damage > 0)
     
     def pause_training(self):
-        self.game_ipc.request_game_state()
-        self.game_ipc.set_flag(FLAGS.IS_TRAINING, False)
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+        self.game_state.set_flag(FLAGS.IS_TRAINING, False)
 
     def resume_training(self):
-        self.game_ipc.block_game_state()
-        self.game_ipc.set_flag(FLAGS.IS_TRAINING, True)
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+        self.game_state.set_flag(FLAGS.IS_TRAINING, True)
 # def random_transition():
 #     return Transition(State.rand(), torch.rand(1, 4), State.rand(), torch.rand(1, 1), torch.rand(1, 1))
 
