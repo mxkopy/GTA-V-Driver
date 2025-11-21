@@ -184,10 +184,3 @@ class Environment:
     def resume_training(self):
         self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
         self.game_state.set_flag(FLAGS.IS_TRAINING, True)
-# def random_transition():
-#     return Transition(State.rand(), torch.rand(1, 4), State.rand(), torch.rand(1, 1), torch.rand(1, 1))
-
-# yry = Transition.cat([random_transition()] * 10)
-# print(yry[2:4].state.image.size())
-
-# exit()
