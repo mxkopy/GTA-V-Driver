@@ -58,9 +58,9 @@ class ControllerHandler(xinput.EventHandler):
         self.physical_controller_state.set_flag(FLAGS.INPUT_WRITTEN, True)
 
     def process_connection_event(self, event):
-        pass
         # if event.type == xinput.EVENT_DISCONNECTED:
             # self.physical_controller_state ^= (0.0, 0.0, 0.0, 0.0)
+        pass
 
     def process_trigger_event(self, event: xinput.Event):
         if event.trigger == xinput.LEFT:
@@ -86,6 +86,7 @@ class ControllerHandler(xinput.EventHandler):
     def virtual_controller_update_thread(self):
         while True:
             # self.virtual_controller_state.push(self.physical_controller_state.pop())
+            self.physical_controller_state.set_flag(FLAGS.INPUT_WRITTEN, True)
             action = self.virtual_controller_state.pop().to_tuple()
             self.virtual_controller_update(*action)
 

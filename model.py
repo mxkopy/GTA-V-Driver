@@ -103,9 +103,11 @@ class DeterministicPolicyGradient:
         self.soft_update(self.critic_target, self.critic)
         self.environment.resume_training()
 
-    def train(self):
+    def train(self, episodes=float('inf')):
         import gc
-        while True:
+        n = 0
+        while n < episodes:
+            n += 1
             self.environment.game_state.set_flag(FLAGS.IS_TRAINING, True)
             self.run_episode()
             self.environment.game_state.set_flag(FLAGS.IS_TRAINING, False)
