@@ -168,11 +168,11 @@ class Environment:
         self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
         physical_controller_state: msgs_pb2.ControllerState = self.physical_controller_state.pop()        
         physical_controller_state: torch.Tensor = torch.tensor(physical_controller_state.to_tuple()).unsqueeze(0)
-        game_state = (torch.tensor([x] if not isinstance(x, list) else x).unsqueeze(0) for x in game_state.to_tuple())
+        game_state = (torch.tensor([x] if not isinstance(x, Iterable) else x).unsqueeze(0) for x in game_state.to_tuple())
         return State(screenshot, physical_controller_state, *game_state)
 
     def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:
-        self.virtual_controller_state.push(*action.reshape(-1).tolist())
+        self.virtual_controller_state.push(msgs_pb2.ControllerState().from_iterable(action.reshape(-1)))
         nextstate: NextState = self.observe()
         reward: Reward = torch.dot(nextstate.velocity.view(-1), nextstate.camera_direction.view(-1)).unsqueeze(0)
         return (nextstate, reward, nextstate.damage > 0)

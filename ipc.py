@@ -138,7 +138,7 @@ class FixedSizeState(type):
             return msg_type(**FixedSizeState.default_init_dict(msg_type.DESCRIPTOR))
         return init
 
-    def from_iterable(self: Message, lst: list | tuple):
+    def from_iterable(self: Message, lst: Iterable):
         for (field, value), x in zip(self.ListFields(), lst):
             if not isinstance(value, Message):
                 self.__setattr__(field.name, x)

@@ -32,6 +32,7 @@ def faux_game_thread(logfile):
         if game_state.get_flag(FLAGS.IS_TRAINING):
             done = False
             state = [1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [0,]
+            state = game_state.MSG_TYPE().from_iterable(state)
             game_state.push(state)
             game_idle()
         else:
@@ -83,14 +84,13 @@ class IPCTests:
 
             physical_controller_update_thread = threading.Thread(target=ControllerHandler.physical_controller_update_thread, args=(controller,), kwargs={'exit': False})
             virtual_controller_update_thread = threading.Thread(target=ControllerHandler.virtual_controller_update_thread, args=(controller,))
-            ddpg_thread = threading.Thread(target=DeterministicPolicyGradient.run_episode, args=(ddpg,))
+            ddpg_thread = threading.Thread(target=DeterministicPolicyGradient.train, args=(ddpg,))
             game_thread = threading.Thread(target=faux_game_thread, args=(logfile,))
             
             for thread in [physical_controller_update_thread, virtual_controller_update_thread, ddpg_thread, game_thread]:
                 thread.start()
-            print('we made it')
-
             time.sleep(5)
+            print('we made it')
             exit()
 
 IPCTests.thread_execution_order_test()

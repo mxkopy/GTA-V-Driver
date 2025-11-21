@@ -103,6 +103,16 @@ class DeterministicPolicyGradient:
         self.soft_update(self.critic_target, self.critic)
         self.environment.resume_training()
 
+    def train(self):
+        import gc
+        while True:
+            self.environment.game_state.set_flag(FLAGS.IS_TRAINING, True)
+            self.run_episode()
+            self.environment.game_state.set_flag(FLAGS.IS_TRAINING, False)
+            gc.collect()
+            torch.cuda.empty_cache()
+            self.optimize_step()
+
 # TODO: This component of the actor/critic model should be trained separately & be otherwise static
 # Otherwise, it might take too long to train the rest of the network 
 # What it really should do is provide per-pixel kinematic information like distance & velocity relative to the viewer
@@ -231,12 +241,3 @@ class DriverCriticModel(DriverModelBase):
             args=args,
             dynamic_shapes=dynamic_shapes
         ).module()
-
-def train(ddpg: DeterministicPolicyGradient):
-    import gc
-    ddpg.environment.game_ipc.set_flag(FLAGS.IS_TRAINING, True)
-    while True:
-        ddpg.run_episode()
-        gc.collect()
-        torch.cuda.empty_cache()
-        ddpg.optimize_step()
