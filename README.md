@@ -1,6 +1,6 @@
-### Making GTA V Safe for Drivers
+### GTA-RL
 
-This (in progress!) repo is an attempt at making the streets of Los Santos safer from automotive injury. It implements Deep Deterministic Policy Gradient a la [OpenAI](https://spinningup.openai.com/en/latest/algorithms/ddpg.html). 
+This (in progress!) repo is an attempt at making the streets of Los Santos safer from automotive injury. It implements Deep Deterministic Policy Gradient a la [OpenAI](https://spinningup.openai.com/en/latest/algorithms/ddpg.html) to train a model to avoid crashing a car. 
 
 The actor and critic models are extensions of MobileNetV3 lightly engineered to process the game state in a meaningful way. In this case, the state is:
 * A screenshot of the game (IMG)
