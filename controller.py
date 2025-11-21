@@ -55,6 +55,7 @@ class ControllerHandler(xinput.EventHandler):
             self.physical_controller_state ^= msgs_pb2.ControllerState(left_joystick_x=event.x, left_joystick_y=event.y)
             # TODO: let's assume we're working with lists or tuples outside of ipc.py so we can use this prettier syntax again
             # self.physical_controller_state ^= (event.x, event.y, None, None)
+        self.physical_controller_state.set_flag(FLAGS.INPUT_WRITTEN, True)
 
     def process_connection_event(self, event):
         pass
@@ -62,12 +63,13 @@ class ControllerHandler(xinput.EventHandler):
             # self.physical_controller_state ^= (0.0, 0.0, 0.0, 0.0)
 
     def process_trigger_event(self, event: xinput.Event):
-        if event.type == xinput.TRIGGER_LEFT:
+        if event.trigger == xinput.LEFT:
             self.physical_controller_state ^= msgs_pb2.ControllerState(left_trigger=event.value)
             # self.physical_controller_state ^= (None, None, event.value, None)
-        if event.type == xinput.TRIGGER_RIGHT:
+        if event.trigger == xinput.RIGHT:
             self.physical_controller_state ^= msgs_pb2.ControllerState(right_trigger=event.value)
             # self.physical_controller_state ^= (None, None, None, event.value)
+        self.physical_controller_state.set_flag(FLAGS.INPUT_WRITTEN, True)
 
     def clamp(x: float, min_val: float=-1, max_val: float=1):
         return min(max(0 if math.isnan(x) else x, min_val), max_val)
@@ -83,7 +85,8 @@ class ControllerHandler(xinput.EventHandler):
 
     def virtual_controller_update_thread(self):
         while True:
-            action = self.virtual_controller_state.pop().tolist()
+            # self.virtual_controller_state.push(self.physical_controller_state.pop())
+            action = self.virtual_controller_state.pop().to_tuple()
             self.virtual_controller_update(*action)
 
     def physical_controller_update_thread(self, exit=True):

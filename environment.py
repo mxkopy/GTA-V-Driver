@@ -167,8 +167,8 @@ class Environment:
         game_state: msgs_pb2.GameState = self.game_state.pop()
         self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
         physical_controller_state: msgs_pb2.ControllerState = self.physical_controller_state.pop()        
-        physical_controller_state: torch.Tensor = torch.tensor(physical_controller_state.tolist()).unsqueeze(0)
-        game_state = (torch.tensor([x] if not isinstance(x, list) else x).unsqueeze(0) for x in game_state.tolist())
+        physical_controller_state: torch.Tensor = torch.tensor(physical_controller_state.to_tuple()).unsqueeze(0)
+        game_state = (torch.tensor([x] if not isinstance(x, list) else x).unsqueeze(0) for x in game_state.to_tuple())
         return State(screenshot, physical_controller_state, *game_state)
 
     def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:

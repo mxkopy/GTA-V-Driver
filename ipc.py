@@ -23,7 +23,8 @@ class FLAGS:
 
 class IPCFlags:
 
-    flags = mmap.mmap(-1, -(N_FLAGS // -8), FLAGS_TAG)
+    def __init__(self):
+        self.flags = mmap.mmap(-1, -(N_FLAGS // -8), FLAGS_TAG)
 
     def set_flag(self, idx: int, value: bool) -> None:
         pos, offset = idx // 8, idx % 8
@@ -66,7 +67,7 @@ class Channel:
 
     def pop_nbl(self) -> bytes:
         self.ipc.seek(0)
-        payload = self.ipc.read(-1)
+        payload: bytes = self.ipc.read(-1)
         return payload
 
 class MappedChannel(Channel):
@@ -76,6 +77,7 @@ class MappedChannel(Channel):
 
     def __init__(self, tagname: str):
         super().__init__(self.__class__.N_BYTES, tagname=tagname)
+        self.push_nbl( self.MSG_TYPE.init() )
 
     def push_nbl(self, payload: Message):
         assert payload.__class__ == self.__class__.MSG_TYPE
@@ -84,6 +86,7 @@ class MappedChannel(Channel):
 
     def pop_nbl(self) -> Message:
         msg: bytes = super().pop_nbl()
+        msgs_pb2.ControllerState.FromString(msg)
         return self.__class__.MSG_TYPE.FromString(msg)
 
 class StateQueue(IPCFlags, MappedChannel):
@@ -115,9 +118,10 @@ class StateQueue(IPCFlags, MappedChannel):
         current_state.MergeFrom(update)
         return current_state
     
-    def __ixor__(self, *update):
+    def __ixor__(self, update: Message):
         updated_state = self ^ update
         self.push_nbl(updated_state)
+        self.set_flag(self.__class__.NEW_MESSAGE_WRITTEN, True)
         return self
 
 class FixedSizeState(type):
@@ -129,16 +133,30 @@ class FixedSizeState(type):
             for field in descriptor.fields
         }
 
-    def init(self: Message):
-        self.CopyFrom(self.__class__(**FixedSizeState.default_init_dict(self.DESCRIPTOR)))
+    def create_init(msg_type: type[Message]):
+        def init():
+            return msg_type(**FixedSizeState.default_init_dict(msg_type.DESCRIPTOR))
+        return init
+
+    def from_iterable(self: Message, lst: list | tuple):
+        for (field, value), x in zip(self.ListFields(), lst):
+            if not isinstance(value, Message):
+                self.__setattr__(field.name, x)
+            else:
+                FixedSizeState.from_iterable(value, x)
         return self
 
-    def tolist(self: Message):
-        return [value if not isinstance(value, Message) else FixedSizeState.tolist(value) for _, value in self.ListFields()]
+    def to_list(self: Message):
+        return [value if not isinstance(value, Message) else FixedSizeState.to_list(value) for _, value in self.ListFields()]
+
+    def to_tuple(self: Message):
+        return tuple(value if not isinstance(value, Message) else FixedSizeState.to_tuple(value) for _, value in self.ListFields())
 
     def __init__(cls, *args, **kwargs):
-        cls.MSG_TYPE.init = FixedSizeState.init
-        cls.MSG_TYPE.tolist = FixedSizeState.tolist
+        cls.MSG_TYPE.init = FixedSizeState.create_init(cls.MSG_TYPE)
+        cls.MSG_TYPE.to_list = FixedSizeState.to_list
+        cls.MSG_TYPE.to_tuple = FixedSizeState.to_tuple
+        cls.MSG_TYPE.from_iterable = FixedSizeState.from_iterable
         cls.N_BYTES = cls.MSG_TYPE(**FixedSizeState.default_init_dict(cls.MSG_TYPE.DESCRIPTOR)).ByteSize()
 
 class VirtualControllerState(StateQueue, metaclass=FixedSizeState):
@@ -148,7 +166,7 @@ class VirtualControllerState(StateQueue, metaclass=FixedSizeState):
     TAGNAME = 'virtual_controller.ipc'
     MSG_TYPE = msgs_pb2.ControllerState
 
-    # def tolist(self) -> list:
+    # def to_tuple(self) -> list:
         # return [msg.left_joystick_x, msg.left_joystick_y, msg.left_trigger, msg.right_trigger]
     
 class PhysicalControllerState(StateQueue, metaclass=FixedSizeState):
@@ -173,8 +191,7 @@ class GameState(StateQueue, metaclass=FixedSizeState):
     #     msg = self.MSG_TYPE(left_joystick_x=x, left_joystick_y=y, left_trigger=lt, right_trigger=rt)
     #     super().push(msg)
 
-gs = GameState().MSG_TYPE().init().tolist()
-print(list(gs))
+# gs = GameState().MSG_TYPE().init().to_tuple()
 
 def debug_flags():
     flags = IPCFlags()
