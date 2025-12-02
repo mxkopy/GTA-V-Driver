@@ -2,33 +2,14 @@ import torch
 import bettercam
 import random
 import config
-import msgs_pb2
+import torchvision
+import math
+# import msgs_pb2
+from msgs_pb2 import ControllerState
 from google.protobuf.message import Message
 from collections import namedtuple
 from typing import Iterable, TypeVarTuple, TypeAlias
 from ipc import GameState, VirtualControllerState, PhysicalControllerState, FLAGS
-
-
-# The bettercam repo is kind of broken
-# TODO: Honestly I should look into how it works under the hood & just elide it as a dependency
-from bettercam.processor.cupy_processor import CupyProcessor
-CupyProcessor.process_cvtcolor = lambda self, image: image
-
-# Amazing one-liner to visualize stuff
-# Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
-def take_screenshot(sct: bettercam.BetterCam) -> torch.Tensor:
-    img = sct.grab()
-    while img is None:
-        img = sct.grab()
-    img = torch.as_tensor(img, device=config.device)
-    img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
-    # img = torchvision.transforms.functional.rgb_to_grayscale(img)
-    img = img.to(dtype=torch.float16) / 255
-    img = torch.nn.functional.interpolate(img, config.state_sizes['image'][1:], mode='bilinear', antialias=True)
-    img = (255 * img).to(dtype=torch.uint8)
-    return img
-
-
 
 class TensorTuple[T: tuple[torch.Tensor, ...]]:
 
@@ -121,6 +102,88 @@ class Transition(TransitionTuple):
         else:
             return self.__class__( *(x[idx] for x in self))
 
+
+# Takes screenshots using bettercam
+class VideoState:
+
+    def __init__(self, queue_length=100, grayscale=True):
+        # The bettercam repo is kind of broken
+        # TODO: Honestly I should look into how it works under the hood & just elide it as a dependency
+        from bettercam.processor.cupy_processor import CupyProcessor
+        CupyProcessor.process_cvtcolor = lambda self, image: image
+        # self.queue = FrameQueue(queue_length)
+        self.sct = bettercam.create(device_idx=0, nvidia_gpu=True)
+        self.grayscale = grayscale
+
+    # SIDE_NOTE: Amazing one-liner to visualize stuff
+    # Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
+
+    # Takes a screenshot of the screen & returns it as a downsampled tensor
+    def pop(self) -> torch.Tensor:
+        img = self.sct.grab()
+        while img is None:
+            img = self.sct.grab()
+        img = torch.as_tensor(img, device=config.device)
+        img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
+        if self.grayscale:
+            img = torchvision.transforms.functional.rgb_to_grayscale(img)
+        img = img.to(dtype=torch.float16) / 255
+        img = torch.nn.functional.interpolate(img, config.state_sizes['image'][1:], mode='bilinear', antialias=True)
+        img = (255 * img).to(dtype=torch.uint8)
+        return img
+        # self.queue.append(img)
+        # return self.queue.collate(f=lambda batch: FrameQueue.polynomial_decay(batch, p=2)) / 255
+
+    def display(self):
+        import numpy as np
+        from PIL import Image
+        img = self.pop()
+        if img.shape[1] == 1:
+            img = img.squeeze().cpu().numpy()
+            Image.fromarray(((img / img.max())*255).astype(np.uint8)).show()
+        else:
+            img = img.squeeze().permute(1, 2, 0).cpu().numpy()
+            Image.fromarray(((img / img.max())*255).astype(np.uint8)).show()
+
+
+class FrameQueue:
+
+    def __init__(self, maxlen=100):
+        self.maxlen = maxlen
+        self.buffer = []
+    
+    def append(self, x):
+        self.buffer.append(x)
+        if len(self.buffer) == self.maxlen:
+            self.buffer.pop(0)
+
+    def collate(self, f=lambda tensor: tensor):
+        return f(torch.cat(self.buffer, dim=0))
+    
+    def reset(self):
+        self.buffer = []
+
+    def mul_window(window, batch):
+        window = window.reshape((-1,) + tuple(1 for _ in batch.size()[1:]))
+        return window * batch
+
+    def blueshift(batch):
+        n = batch.shape[0]
+        r = torch.linspace(0, 1, n).to(device=batch.device)
+        g = torch.cat((torch.linspace(0, 1, n // 2), torch.linspace(1, 0, n-(n // 2) + 1)[1:])).to(device=batch.device)
+        b = torch.linspace(1, 0, n).to(device=batch.device)
+        R = FrameQueue.mul_window(r, batch).sum(dim=0, keepdim=True)
+        G = FrameQueue.mul_window(g, batch).sum(dim=0, keepdim=True)
+        B = FrameQueue.mul_window(b, batch).sum(dim=0, keepdim=True)
+        Y = torch.cat((R, G, B), dim=1)
+        return Y
+
+    def polynomial_decay(batch, p=1):
+        n = batch.shape[0]
+        window = torch.linspace(0, 1, n).pow(p).to(device=batch.device)
+        y = FrameQueue.mul_window(window, batch).sum(dim=0, keepdim=True)
+        return y
+
 class ReplayBuffer:
 
     def __init__(self, capacity=300):
@@ -143,44 +206,48 @@ class ReplayBuffer:
         return Transition.cat(observations)
 
     def reset(self):
-        self.reserve = random.sample(self.reserve + self.buffer, self.n)
+        self.reserve = random.sample(self.reserve + self.buffer, self.capacity)
         self.buffer = [None for _ in range(self.capacity)]
         self.idx = 0
 
 class Environment:
 
-    def __init__(self):
+    def __init__(self, queue_length=100):
+        self.video_state = VideoState(queue_length=queue_length)
         self.game_state = GameState()
         self.physical_controller_state = PhysicalControllerState()
         self.virtual_controller_state = VirtualControllerState()
-        self.sct = bettercam.create(device_idx=0, nvidia_gpu=True)
-        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
         self.physical_controller_state.set_flag(FLAGS.REQUEST_INPUT, True)
         self.virtual_controller_state.set_flag(FLAGS.REQUEST_ACTION, True)
     
-    def debug_observe(self) -> State:
-        return State.rand()
-
     def observe(self) -> State:
-        screenshot: torch.Tensor = take_screenshot(self.sct)
-        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
-        game_state: msgs_pb2.GameState = self.game_state.pop()
-        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
-        physical_controller_state: msgs_pb2.ControllerState = self.physical_controller_state.pop()        
-        physical_controller_state: torch.Tensor = torch.tensor(physical_controller_state.to_tuple()).unsqueeze(0)
-        game_state = (torch.tensor([x] if not isinstance(x, Iterable) else x).unsqueeze(0) for x in game_state.to_tuple())
-        return State(screenshot, physical_controller_state, *game_state)
+        video_state: torch.Tensor = self.video_state.pop()
+        game_state: tuple = self.game_state.pop()
+        physical_controller_state: torch.Tensor = torch.tensor(self.physical_controller_state.pop()).unsqueeze(0)
+        game_state = (torch.tensor([x] if not isinstance(x, Iterable) else x).unsqueeze(0) for x in game_state)
+        return State(video_state, physical_controller_state, *game_state)
 
     def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:
-        self.virtual_controller_state.push(msgs_pb2.ControllerState().from_iterable(action.reshape(-1)))
+        action = action.view(-1)
+        virtual_controller_state = ControllerState(
+            left_joystick_x=action[0],
+            left_joystick_y=action[1], 
+            left_trigger=action[2],
+            right_trigger=action[3]
+        )
+        self.virtual_controller_state.push(virtual_controller_state)
         nextstate: NextState = self.observe()
         reward: Reward = torch.dot(nextstate.velocity.view(-1), nextstate.camera_direction.view(-1)).unsqueeze(0)
         return (nextstate, reward, nextstate.damage > 0)
     
     def pause_training(self):
-        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
         self.game_state.set_flag(FLAGS.IS_TRAINING, False)
 
     def resume_training(self):
-        self.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
         self.game_state.set_flag(FLAGS.IS_TRAINING, True)
+
+    def reset(self):
+        pass
+        # self.video_state.display()
+        # self.video_state.queue.reset()

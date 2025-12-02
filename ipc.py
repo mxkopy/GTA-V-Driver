@@ -21,7 +21,7 @@ class FLAGS:
     RESET = 6
     IS_TRAINING = 7
 
-class IPCFlags:
+class Flags:
 
     def __init__(self):
         self.flags = mmap.mmap(-1, -(N_FLAGS // -8), FLAGS_TAG)
@@ -89,7 +89,7 @@ class MappedChannel(Channel):
         msgs_pb2.ControllerState.FromString(msg)
         return self.__class__.MSG_TYPE.FromString(msg)
 
-class StateQueue(IPCFlags, MappedChannel):
+class StateQueue(Flags, MappedChannel):
 
     READY_TO_READ: int
     NEW_MESSAGE_WRITTEN: int
@@ -99,15 +99,15 @@ class StateQueue(IPCFlags, MappedChannel):
     MSG_TYPE: type[Message]
 
     def __init__(self):
-        IPCFlags.__init__(self)
+        Flags.__init__(self)
         MappedChannel.__init__(self, tagname=self.__class__.TAGNAME)
 
-    def push(self, state: Message):
+    def push(self, state: tuple | list | Message):
         self.wait_until(self.__class__.READY_TO_READ, True)
         self.push_nbl(state)
         self.set_flag(self.__class__.NEW_MESSAGE_WRITTEN, True)
 
-    def pop(self) -> Message:
+    def pop(self) -> tuple:
         self.wait_until(self.__class__.NEW_MESSAGE_WRITTEN, True)
         state: Message = self.pop_nbl()
         self.set_flag(self.__class__.NEW_MESSAGE_WRITTEN, False)
@@ -138,19 +138,20 @@ class FixedSizeState(type):
             return msg_type(**FixedSizeState.default_init_dict(msg_type.DESCRIPTOR))
         return init
 
-    def from_iterable(self: Message, lst: Iterable):
-        for (field, value), x in zip(self.ListFields(), lst):
-            if not isinstance(value, Message):
-                self.__setattr__(field.name, x)
-            else:
+    def from_iterable(self: Message, itr: Iterable):
+        for field, x in zip(self.DESCRIPTOR.fields, itr):
+            value = getattr(self, field.name)
+            if not isinstance(value, Message) and x is not None:
+                setattr(self, field.name, x)
+            elif x is not None:
                 FixedSizeState.from_iterable(value, x)
         return self
 
     def to_list(self: Message):
-        return [value if not isinstance(value, Message) else FixedSizeState.to_list(value) for _, value in self.ListFields()]
+        return [getattr(self, field.name) if field.message_type is None else FixedSizeState.to_list(getattr(self, field.name)) for field in self.DESCRIPTOR.fields]
 
     def to_tuple(self: Message):
-        return tuple(value if not isinstance(value, Message) else FixedSizeState.to_tuple(value) for _, value in self.ListFields())
+        return tuple(getattr(self, field.name) if field.message_type is None else FixedSizeState.to_tuple(getattr(self, field.name)) for field in self.DESCRIPTOR.fields)
 
     def __init__(cls, *args, **kwargs):
         cls.MSG_TYPE.init = FixedSizeState.create_init(cls.MSG_TYPE)
@@ -166,9 +167,15 @@ class VirtualControllerState(StateQueue, metaclass=FixedSizeState):
     TAGNAME = 'virtual_controller.ipc'
     MSG_TYPE = msgs_pb2.ControllerState
 
-    # def to_tuple(self) -> list:
-        # return [msg.left_joystick_x, msg.left_joystick_y, msg.left_trigger, msg.right_trigger]
-    
+    def pop(self: StateQueue):
+        controller_state = StateQueue.pop(self)
+        return (
+            controller_state.left_joystick_x, 
+            controller_state.left_joystick_y, 
+            controller_state.left_trigger, 
+            controller_state.right_trigger
+        )
+
 class PhysicalControllerState(StateQueue, metaclass=FixedSizeState):
 
     READY_TO_READ = FLAGS.REQUEST_INPUT
@@ -176,9 +183,15 @@ class PhysicalControllerState(StateQueue, metaclass=FixedSizeState):
     TAGNAME = 'physical_controller.ipc'
     MSG_TYPE = msgs_pb2.ControllerState
 
-    # push = VirtualControllerState.push
-    # pop = VirtualControllerState.pop
-
+    def pop(self: StateQueue):
+        self.set_flag(FLAGS.INPUT_WRITTEN, True)
+        controller_state = StateQueue.pop(self)
+        return (
+            controller_state.left_joystick_x, 
+            controller_state.left_joystick_y, 
+            controller_state.left_trigger, 
+            controller_state.right_trigger
+        )
 
 class GameState(StateQueue, metaclass=FixedSizeState):
 
@@ -187,14 +200,19 @@ class GameState(StateQueue, metaclass=FixedSizeState):
     TAGNAME = 'game_state.ipc'
     MSG_TYPE = msgs_pb2.GameState
 
-    # def push(self, x: float, y: float, lt: float, rt: float):
-    #     msg = self.MSG_TYPE(left_joystick_x=x, left_joystick_y=y, left_trigger=lt, right_trigger=rt)
-    #     super().push(msg)
+    def pop(self: StateQueue):
+        self.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+        game_state = StateQueue.pop(self)
+        self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
+        return (
+            (game_state.camera_direction.x, game_state.camera_direction.y, game_state.camera_direction.z), 
+            (game_state.velocity.x, game_state.velocity.y, game_state.velocity.z), 
+            game_state.damage,
+        )
 
-# gs = GameState().MSG_TYPE().init().to_tuple()
 
 def debug_flags():
-    flags = IPCFlags()
+    flags = Flags()
     print(f'REQUEST_GAME_STATE: {flags.get_flag(FLAGS.REQUEST_GAME_STATE)}')
     print(f'REQUEST_INPUT: {flags.get_flag(FLAGS.REQUEST_INPUT)}')
     print(f'REQUEST_ACTION: {flags.get_flag(FLAGS.REQUEST_ACTION)}')
