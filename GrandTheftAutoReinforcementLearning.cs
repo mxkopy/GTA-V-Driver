@@ -43,9 +43,11 @@ public class GrandTheftAutoReinforcementLearning : Script
         Game.Player.Wanted.SetWantedLevel(0, false);
         Game.Player.Wanted.ApplyWantedLevelChangeNow(false);
 
+
+
         //SharpDX.DXGI.SwapChain.FromPointer<IntPtr>(GetSwapChainPtr());
 
-        var sc = SharpDX.DXGI.SwapChain.FromPointer<IntPtr>(GetSwapChainPtr());
+        //var sc = SharpDX.DXGI.SwapChain.FromPointer<IntPtr>(GetSwapChainPtr());
         //if (V != null)
         //{
         //    if (flags.GetFlag((int)FLAGS.IS_TRAINING) )

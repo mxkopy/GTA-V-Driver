@@ -119,6 +119,7 @@ class VideoState:
     # Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
 
     # Takes a screenshot of the screen & returns it as a downsampled tensor
+    # TODO: Implement reading tensor from pointer to data preprocessed by the directx hook  
     def pop(self) -> torch.Tensor:
         img = self.sct.grab()
         while img is None:
