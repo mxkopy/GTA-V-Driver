@@ -140,7 +140,11 @@
       <AdditionalDependencies>$(CoreLibraryDependencies);%(AdditionalDependencies);</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>move /Y "$(SolutionDir)\$(ProjectName)\$(Platform)\$(Configuration)\*.asi" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\"</Command>
+      <Command>copy /Y "$(SolutionDir)\$(ProjectName)\$(Platform)\$(Configuration)\*.asi" "$(SolutionDir)\build"
+
+if $(ConfigurationName) == Development (
+copy /Y "$(SolutionDir)\$(ProjectName)\$(Platform)\$(Configuration)\*.asi" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V"
+)</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

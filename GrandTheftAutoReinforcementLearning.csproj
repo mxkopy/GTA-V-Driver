@@ -172,8 +172,10 @@
 :: SET steamPath=$(Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Valve\Steam" -Name InstallPath)
 :: }
 
+copy /Y "*.dll" "$(ProjectDir)/build/scripts"
+
 if $(ConfigurationName) == Development (
-move /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+copy /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
 del "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ScriptHookVDotNet3.dll"
 )</PostBuildEvent>
   </PropertyGroup>

@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "framework.h"
 
-
 static void* SwapChainPtr = NULL;
 
 __declspec(dllexport) void* getSwapChainPtr() {

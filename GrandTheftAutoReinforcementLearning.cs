@@ -44,36 +44,35 @@ public class GrandTheftAutoReinforcementLearning : Script
         Game.Player.Wanted.ApplyWantedLevelChangeNow(false);
 
 
-
         //SharpDX.DXGI.SwapChain.FromPointer<IntPtr>(GetSwapChainPtr());
 
         //var sc = SharpDX.DXGI.SwapChain.FromPointer<IntPtr>(GetSwapChainPtr());
-        //if (V != null)
-        //{
-        //    if (flags.GetFlag((int)FLAGS.IS_TRAINING) )
-        //    {       
-        //        Vector3 CameraDirection = Vector3.Project(GameplayCamera.Direction, V.ForwardVector);
-        //        GameState.State.CameraDirection.X = CameraDirection.X;
-        //        GameState.State.CameraDirection.Y = CameraDirection.Y;
-        //        GameState.State.CameraDirection.Z = CameraDirection.Z;
-        //        Vector3 Velocity = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector));
-        //        GameState.State.Velocity.X = Velocity.X;
-        //        GameState.State.Velocity.Y = Velocity.Y;
-        //        GameState.State.Velocity.Z = Velocity.Z;
+        if (V != null)
+        {
+            if (flags.GetFlag((int)FLAGS.IS_TRAINING))
+            {
+                Vector3 CameraDirection = Vector3.Project(GameplayCamera.Direction, V.ForwardVector);
+                GameState.State.CameraDirection.X = CameraDirection.X;
+                GameState.State.CameraDirection.Y = CameraDirection.Y;
+                GameState.State.CameraDirection.Z = CameraDirection.Z;
+                Vector3 Velocity = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector));
+                GameState.State.Velocity.X = Velocity.X;
+                GameState.State.Velocity.Y = Velocity.Y;
+                GameState.State.Velocity.Z = Velocity.Z;
 
-        //        GameState.State.Damage = (uint) (V.MaxHealth - V.Health);
+                GameState.State.Damage = (uint)(V.MaxHealth - V.Health);
 
-        //        GameState.Put(GameState.State);
+                GameState.Put(GameState.State);
 
-        //        while (flags.GetFlag((int)FLAGS.GAME_STATE_WRITTEN) && flags.GetFlag((int)FLAGS.IS_TRAINING));
-        //    }
-        //    else
-        //    {
-        //        Reset();
-        //        //Yield();
-        //        Wait(10);
-        //    }
-        //}
+                while (flags.GetFlag((int)FLAGS.GAME_STATE_WRITTEN) && flags.GetFlag((int)FLAGS.IS_TRAINING)) ;
+            }
+            else
+            {
+                Reset();
+                //Yield();
+                Wait(10);
+            }
+        }
     }
 
     private void Reset()
