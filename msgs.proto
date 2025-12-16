@@ -1,3 +1,5 @@
+option csharp_namespace = "Messages";
+
 message ControllerState {
     optional float left_joystick_x = 1;
     optional float left_joystick_y = 2;

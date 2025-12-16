@@ -1,4 +1,5 @@
-﻿using GTA;
+﻿using Google.Protobuf;
+using GTA;
 using IPC;
 using System;
 using System.Collections.Generic;
@@ -14,16 +15,16 @@ using System.Threading.Tasks;
 
 namespace IPC
 {
-    enum FLAGS
+    enum FLAGS: int
     {
-        REQUEST_GAME_STATE = 0,
-        REQUEST_INPUT = 1,
-        REQUEST_ACTION = 2,
-        GAME_STATE_WRITTEN = 3,
-        INPUT_WRITTEN = 4,
-        ACTION_WRITTEN = 5,
-        RESET = 6,
-        IS_TRAINING = 7
+        REQUEST_GAME_STATE,
+        REQUEST_INPUT,
+        REQUEST_ACTION,
+        GAME_STATE_WRITTEN,
+        INPUT_WRITTEN,
+        ACTION_WRITTEN,
+        RESET,
+        IS_TRAINING
     }
 
     public class Flags
@@ -96,11 +97,10 @@ namespace IPC
         private readonly MemoryMappedViewStream ipc;
         private readonly int size;
 
-        public Channel(int size, string tag)
+        public Channel(string tag)
         {
-            this.size = size;
-            ipc_f = MemoryMappedFile.CreateOrOpen(tag, size);
-            ipc = ipc_f.CreateViewStream(0, size);
+            ipc_f = MemoryMappedFile.OpenExisting(tag);
+            ipc = ipc_f.CreateViewStream();
         }
 
         public void Close()
@@ -109,171 +109,91 @@ namespace IPC
             ipc.Dispose();
             ipc_f.Dispose();
         }
-        public void Put(byte[] payload)
+        public void PushNbl(byte[] payload)
         {
             ipc.Seek(0, 0);
             ipc.Write(payload, 0, payload.Length);
             ipc.Flush();
         }
-        public byte[] Take()
+        public byte[] PopNbl()
         {
-            byte[] payload = new byte[size];
+            int n = (int) ipc.Length;
+            byte[] payload = new byte[n];
             ipc.Seek(0, 0);
-            ipc.Read(payload, 0, size);
+            ipc.Read(payload, 0, n);
             return payload;
         }
     }
 
-    [AttributeUsage(AttributeTargets.Field, Inherited = true, AllowMultiple = false)]
-    public class Mappable : Attribute
+    public class MappedChannel<T>: Channel where T : IMessage, new()
     {
-        public int position;
 
-        public Mappable(int position, int count = -1)
+        public void PushNbl(T message)
         {
-            this.position = position;
+            PushNbl(message.ToByteArray());
         }
+        public void PopNbl(ref T message)
+        {
+            byte[] message_bytes = base.PopNbl();
+            message.MergeFrom(message_bytes);
+        }
+
+        public T PopNbl()
+        {
+            T msg = new T();
+            byte[] message_bytes = base.PopNbl();
+            msg.MergeFrom(message_bytes);
+            return msg;
+        }
+
+        public MappedChannel(string tag) : base(tag) { }
     }
 
-    public class Map<T> where T : class, new()
+    class GameState : MappedChannel<Messages.GameState>
     {
-        public T map;
-        private byte[] buffer = new byte[Length];
 
-        private static readonly T defaultMap = new T();
-        private static readonly FieldInfo[] memberFields = typeof(T).GetFields().Where(IsArrayField).OrderBy(field => GetAttribute(field).position).ToArray();
+        public Messages.GameState State;
+        public Flags flags;
 
-        private static readonly int[] lengths = memberFields.Select(field => Buffer.ByteLength((Array)field.GetValue(defaultMap))).ToArray();
-        private static readonly int[] offsets = lengths.Select((_, index) => new ArraySegment<int>(lengths, 0, index).Sum()).ToArray();
-        public static readonly int Length = lengths.Sum();
-
-        public Map(T map)
+        public GameState(): base("game_state.ipc")
         {
-            this.map = map;
-        }
-
-        public Map()
-        {
-            this.map = new T();
-        }
-
-        private static bool IsArrayField(FieldInfo field)
-        {
-            return Attribute.GetCustomAttribute(field, typeof(Mappable)) != null && typeof(Array).IsAssignableFrom(field.FieldType);
-        }
-        private static Mappable GetAttribute(FieldInfo field)
-        {
-            return (Mappable)Attribute.GetCustomAttribute(field, typeof(Mappable));
-        }
-
-        public byte[] ToBytes(ref T map)
-        {
-            this.map = map;
-            return bytes;
-        }
-
-        public T FromBytes(byte[] buffer)
-        {
-            bytes = buffer;
-            return map;
-        }
-        public byte[] bytes
-        {
-            get
+            State = new Messages.GameState
             {
-                for (int i = 0; i < memberFields.Length; i++)
-                    Buffer.BlockCopy((Array)memberFields[i].GetValue(map), 0, buffer, offsets[i], lengths[i]);
-                return buffer;
-            }
-
-            set
-            {
-                value.CopyTo(buffer, 0);
-                for (int i = 0; i < memberFields.Length; i++)
-                    Buffer.BlockCopy(buffer, offsets[i], (byte[])memberFields[i].GetValue(map), 0, lengths[i]);
-            }
-        }
-    }
-
-    public class MappedChannel<T> : Channel where T : class, new()
-    {
-
-        public Map<T> map = new Map<T>();
-
-        public void Put(ref T map)
-        {
-            this.map.map = map;
-            Put(this.map.bytes);
-        }
-        public void Take(ref T map)
-        {
-            this.map.map = map;
-            this.map.bytes = base.Take();
-        }
-        public new T Take()
-        {
-            T map = new T();
-            this.map.map = map;
-            this.map.bytes = base.Take();
-            return map;
-        }
-        public MappedChannel(string tag) : base(Map<T>.Length, tag)
-        {
-        }
-    }
-}
-
-
-public class GameState
-{
-    [Mappable(position: 0)]
-    public float[] CAM = new float[3];
-
-    [Mappable(position: 1)]
-    public float[] VEL = new float[3];
-
-    [Mappable(position: 2)]
-    public int[] DMG = new int[1];
-}
-
-class GameIPC: Flags
-{
-
-    public MappedChannel<GameState> GameStateChannel = new MappedChannel<GameState>("game_state.ipc");
-    
-    public void Debug()
-    {
-        using (FileStream fsWrite = new FileStream("debug.txt", FileMode.OpenOrCreate, FileAccess.Write))
-        {
-            string[] debugstrs = new[] {
-                $"REQUEST_GAME_STATE: {GetFlag((int) FLAGS.REQUEST_GAME_STATE)}",
-                $"REQUEST_INPUT: {GetFlag((int) FLAGS.REQUEST_INPUT)}",
-                $"REQUEST_ACTION: {GetFlag((int) FLAGS.REQUEST_ACTION)}",
-                $"GAME_STATE_WRITTEN: {GetFlag((int) FLAGS.GAME_STATE_WRITTEN)}",
-                $"INPUT_WRITTEN: {GetFlag((int) FLAGS.INPUT_WRITTEN)}",
-                $"ACTION_WRITTEN: {GetFlag((int) FLAGS.ACTION_WRITTEN)}",
-                $"RESET: {GetFlag((int) FLAGS.RESET)}",
-                $"IS_TRAINING: {GetFlag((int) FLAGS.IS_TRAINING)}"
+                CameraDirection = new Messages.Vector3 { },
+                Velocity = new Messages.Vector3 { },
+                Damage = 0
             };
-            flags.Seek(0, 0);
-            debugstrs = debugstrs.Append($"{flags.ReadByte()}").ToArray();
-            string debugstr = string.Join("\n", debugstrs);
-            byte[] bytestr = System.Text.Encoding.UTF8.GetBytes(debugstr);
-            fsWrite.Write(bytestr, 0, bytestr.Length);
+            flags = new Flags();
+        }
+        public void Put(Messages.GameState state)
+        {
+            flags.WaitUntil((int) FLAGS.REQUEST_GAME_STATE, true);
+            PushNbl(state);
+            flags.SetFlag((int)FLAGS.GAME_STATE_WRITTEN, true);
         }
     }
-    public void WriteState(GameState state)
-    {
-
-        WaitUntil((int)FLAGS.REQUEST_GAME_STATE, true);
-        GameStateChannel.Put(ref state);
-        SetFlag((int)FLAGS.GAME_STATE_WRITTEN, true);
-    }
-
-    public void WriteStateImmediate(GameState state)
-    {
-        GameStateChannel.Put(ref state);
-        SetFlag((int)FLAGS.GAME_STATE_WRITTEN, true);
-    }
-
 }
+
+
+    
+//public void Debug()
+//{
+//    using (FileStream fsWrite = new FileStream("debug.txt", FileMode.OpenOrCreate, FileAccess.Write))
+//    {
+//        string[] debugstrs = new[] {
+//            $"REQUEST_GAME_STATE: {GetFlag((int) FLAGS.REQUEST_GAME_STATE)}",
+//            $"REQUEST_INPUT: {GetFlag((int) FLAGS.REQUEST_INPUT)}",
+//            $"REQUEST_ACTION: {GetFlag((int) FLAGS.REQUEST_ACTION)}",
+//            $"GAME_STATE_WRITTEN: {GetFlag((int) FLAGS.GAME_STATE_WRITTEN)}",
+//            $"INPUT_WRITTEN: {GetFlag((int) FLAGS.INPUT_WRITTEN)}",
+//            $"ACTION_WRITTEN: {GetFlag((int) FLAGS.ACTION_WRITTEN)}",
+//            $"RESET: {GetFlag((int) FLAGS.RESET)}",
+//            $"IS_TRAINING: {GetFlag((int) FLAGS.IS_TRAINING)}"
+//        };
+//        flags.Seek(0, 0);
+//        debugstrs = debugstrs.Append($"{flags.ReadByte()}").ToArray();
+//        string debugstr = string.Join("\n", debugstrs);
+//        byte[] bytestr = System.Text.Encoding.UTF8.GetBytes(debugstr);
+//        fsWrite.Write(bytestr, 0, bytestr.Length);
+//    }
+//}

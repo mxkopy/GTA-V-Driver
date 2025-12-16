@@ -24,13 +24,14 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nmsgs.proto\"p\n\x0f\x43ontrollerState\x12\x17\n\x0fleft_joystick_x\x18\x01 \x01(\x02\x12\x17\n\x0fleft_joystick_y\x18\x02 \x01(\x02\x12\x14\n\x0cleft_trigger\x18\x03 \x01(\x02\x12\x15\n\rright_trigger\x18\x04 \x01(\x02\"*\n\x07Vector3\x12\t\n\x01x\x18\x01 \x01(\x02\x12\t\n\x01y\x18\x02 \x01(\x02\x12\t\n\x01z\x18\x03 \x01(\x02\"[\n\tGameState\x12\"\n\x10\x63\x61mera_direction\x18\x01 \x01(\x0b\x32\x08.Vector3\x12\x1a\n\x08velocity\x18\x02 \x01(\x0b\x32\x08.Vector3\x12\x0e\n\x06\x64\x61mage\x18\x03 \x01(\x07')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\nmsgs.proto\"p\n\x0f\x43ontrollerState\x12\x17\n\x0fleft_joystick_x\x18\x01 \x01(\x02\x12\x17\n\x0fleft_joystick_y\x18\x02 \x01(\x02\x12\x14\n\x0cleft_trigger\x18\x03 \x01(\x02\x12\x15\n\rright_trigger\x18\x04 \x01(\x02\"*\n\x07Vector3\x12\t\n\x01x\x18\x01 \x01(\x02\x12\t\n\x01y\x18\x02 \x01(\x02\x12\t\n\x01z\x18\x03 \x01(\x02\"[\n\tGameState\x12\"\n\x10\x63\x61mera_direction\x18\x01 \x01(\x0b\x32\x08.Vector3\x12\x1a\n\x08velocity\x18\x02 \x01(\x0b\x32\x08.Vector3\x12\x0e\n\x06\x64\x61mage\x18\x03 \x01(\x07\x42\x0b\xaa\x02\x08Messages')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'msgs_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'\252\002\010Messages'
   _globals['_CONTROLLERSTATE']._serialized_start=14
   _globals['_CONTROLLERSTATE']._serialized_end=126
   _globals['_VECTOR3']._serialized_start=128

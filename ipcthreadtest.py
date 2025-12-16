@@ -4,8 +4,9 @@ import multiprocessing
 import config
 import time
 import random
+import sys
+from ddpg import DeterministicPolicyGradient
 from collections.abc import Callable, Buffer
-from model import DeterministicPolicyGradient, DriverActorModel, DriverCriticModel
 from ipc import GameState, PhysicalControllerState, VirtualControllerState, FLAGS
 from controller import ControllerHandler
 
@@ -24,29 +25,27 @@ def logging_hook(method: Callable, tag: str | bytes, logfile: str = LOG_FILE ) -
             return output
     return log
 
-GameState.pop = logging_hook(GameState.pop, 'GR')
-DeterministicPolicyGradient.compute_action = logging_hook(DeterministicPolicyGradient.compute_action, 'CA')
-VirtualControllerState.push = logging_hook(VirtualControllerState.push, 'VW')
-VirtualControllerState.pop = logging_hook(VirtualControllerState.pop, 'VR')
-DeterministicPolicyGradient.update_actor = logging_hook(DeterministicPolicyGradient.update_actor, 'Updating Actor')
-DeterministicPolicyGradient.update_critic = logging_hook(DeterministicPolicyGradient.update_critic, 'Updating Critic')
+GameState.pop = logging_hook(GameState.pop, 'Game Read')
+
+VirtualControllerState.push = logging_hook(VirtualControllerState.push, 'Virtual Write')
+VirtualControllerState.pop = logging_hook(VirtualControllerState.pop, 'Virtual Read')
+
 
 def faux_game_thread():
-    GameState.push = logging_hook(GameState.push, "GW")
+    GameState.push = logging_hook(GameState.push, "Game Write")
     game_state = GameState()
     def game_idle():
         while game_state.get_flag(FLAGS.GAME_STATE_WRITTEN) and game_state.get_flag(FLAGS.IS_TRAINING):
             time.sleep(1e-3)
-    game_idle = logging_hook(game_idle, "GI")
+    game_idle = logging_hook(game_idle, "Game Idle")
     pause_msg = False
+    state = GameState.MSG_TYPE.init()
     while True:
         if game_state.get_flag(FLAGS.IS_TRAINING):
             if pause_msg:
                 file.write('Resumed training\n'.encode())
                 pause_msg = False
             time.sleep(random.random() / 100)
-            state = [random.random()]*3, [random.random()]*3, [0]
-            state = game_state.MSG_TYPE().from_iterable(state)
             game_state.push(state)
             game_idle()
         else:
@@ -64,65 +63,38 @@ def virtual_controller_thread():
     controller = ControllerHandler()
     controller.virtual_controller_update_thread()
     
-def train_thread():
-    actor = DriverActorModel().jit().to(device=config.device)
-    critic = DriverCriticModel().jit().to(device=config.device)
-    ddpg = DeterministicPolicyGradient(actor, critic)
-    ddpg.train(episodes=1)
 
 
 if __name__ == '__main__':
 
-    with io.FileIO(LOG_FILE, 'w') as file:
-        file.write(b'')
-        file.flush()    
+    # with io.FileIO(LOG_FILE, 'w') as file:
+    #     file.write(b'')
+    #     file.flush()    
 
-    train = threading.Thread(target=train_thread, daemon=True)
-    train.start()
+    if len(sys.argv) == 1:
+        from model import DeterministicPolicyGradient, DriverActorModel, DriverCriticModel
+        DeterministicPolicyGradient.compute_action = logging_hook(DeterministicPolicyGradient.compute_action, 'Compute Action')
+        DeterministicPolicyGradient.update_actor = logging_hook(DeterministicPolicyGradient.update_actor, 'Updating Actor')
+        DeterministicPolicyGradient.update_critic = logging_hook(DeterministicPolicyGradient.update_critic, 'Updating Critic')
+        actor = DriverActorModel().to(device=config.device).jit()
+        critic = DriverCriticModel().to(device=config.device).jit()
+        ddpg = DeterministicPolicyGradient(actor, critic)
+        ddpg.environment.game_state.set_flag(FLAGS.REQUEST_GAME_STATE, True)
+        print("Starting training")
+        ddpg.train()
 
-    threads = [multiprocessing.Process(target=f, daemon=True) for f in [physical_controller_thread, virtual_controller_thread, faux_game_thread]]
-    for thread in threads:
-        thread.start()
+    if sys.argv[1] == 'debug':
+        from ipc import debug_flags, Flags
+        if len(sys.argv) == 2:
+            debug_flags()
+        elif len(sys.argv) == 3 or sys.argv[3] == '1':
+            Flags().set_flag(int(sys.argv[2]), True)
+        elif sys.argv[3] == '0':
+            Flags().set_flag(int(sys.argv[2]), False)
 
-    train.join() 
-    print('we made it')
-    exit()
-
-
-
-# from ipc import VirtualControllerState, PhysicalControllerState, FixedSizeState, debug_flags
-# from controller import ControllerHandler
-# import msgs_pb2
-
-# bits = b'\r\x00\x00\x80?'
-
-# msgs_pb2.GameState.init = FixedSizeState.create_init(msgs_pb2.GameState)
-# msgs_pb2.GameState.to_tuple = FixedSizeState.to_tuple
-# msgs_pb2.GameState.from_iterable = FixedSizeState.from_iterable
-
-# lst = msgs_pb2.GameState.init().to_tuple()
-# state = msgs_pb2.GameState.init().from_iterable(lst)
-# print(state)
-# print(lst)
-# exit()
-# bits = msgs_pb2.ControllerState().init().SerializeToString()
-# print(bits)
-# print( msgs_pb2.ControllerState.FromString(bits) )
-# exit()
-
-# from ipc import FLAGS
-# with io.FileIO('test.log', 'a') as logfile:
-#     VirtualControllerState.push = logging_hook(VirtualControllerState.push, logfile, 'Virtual Write')
-#     PhysicalControllerState.push = logging_hook(PhysicalControllerState.push, logfile, 'Physical Write')
-#     VirtualControllerState.pop = logging_hook(VirtualControllerState.pop, logfile, 'Virtual Read')
-#     PhysicalControllerState.pop = logging_hook(PhysicalControllerState.pop, logfile, 'Physical Read')
-#     # controller = ControllerHandler()
-#     debug_flags()
-#     PhysicalControllerState.set_flag(FLAGS.REQUEST_ACTION, True)
-#     PhysicalControllerState.set_flag(FLAGS.REQUEST_INPUT, True)
-
-#     debug_flags()
-
-#     # exit()
-#     ControllerHandler().physical_controller_update_thread()
-#     ControllerHandler().virtual_controller_update_thread()
+        exit()
+    elif sys.argv[1] == 'controller':
+        controller = ControllerHandler()
+        t = controller.physical_controller_update_thread()
+        t.start()
+        controller.virtual_controller_update_thread()

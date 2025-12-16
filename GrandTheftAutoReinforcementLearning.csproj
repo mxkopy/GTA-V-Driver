@@ -98,6 +98,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>7.3</LangVersion>
     <ErrorReport>prompt</ErrorReport>
+    <RegisterForComInterop>false</RegisterForComInterop>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="ScriptHookVDotNet3">
@@ -119,6 +120,7 @@
   <ItemGroup>
     <Compile Include="GrandTheftAutoReinforcementLearning.cs" />
     <Compile Include="IPC.cs" />
+    <Compile Include="Msgs.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -131,10 +133,19 @@
     <PackageReference Include="hidlibrary" PrivateAssets="all">
       <Version>3.3.40</Version>
     </PackageReference>
+    <PackageReference Include="InjectDotnet.NativeHelper">
+      <Version>0.4.0</Version>
+    </PackageReference>
     <PackageReference Include="Nefarius.ViGEm.Client">
       <Version>1.21.256</Version>
     </PackageReference>
     <PackageReference Include="SharpDX" PrivateAssets="all">
+      <Version>4.2.0</Version>
+    </PackageReference>
+    <PackageReference Include="SharpDX.Direct3D11">
+      <Version>4.2.0</Version>
+    </PackageReference>
+    <PackageReference Include="SharpDX.DXGI">
       <Version>4.2.0</Version>
     </PackageReference>
     <PackageReference Include="SharpDX.XInput" Version="4.2.0" PrivateAssets="all" />
@@ -161,8 +172,10 @@
 :: SET steamPath=$(Get-ItemPropertyValue -Path "HKLM:\SOFTWARE\Valve\Steam" -Name InstallPath)
 :: }
 
-if $(ConfigurationName) == Development (
-move /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
+copy /Y "*.dll" "$(ProjectDir)/build/scripts"
+
+if ($(ConfigurationName) == Development -or $(ConfigurationName) == Debug) (
+copy /Y "*.dll" "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts"
 del "E:\SteamLibrary\steamapps\common\Grand Theft Auto V\scripts\ScriptHookVDotNet3.dll"
 )</PostBuildEvent>
   </PropertyGroup>

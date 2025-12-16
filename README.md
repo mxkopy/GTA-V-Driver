@@ -2,38 +2,15 @@
 
 This (in progress!) repo is an attempt at making the streets of Los Santos safer from automotive injury. It implements Deep Deterministic Policy Gradient a la [OpenAI](https://spinningup.openai.com/en/latest/algorithms/ddpg.html) to train a model to avoid crashing a car. 
 
-The actor and critic models are extensions of MobileNetV3 lightly engineered to process the game state in a meaningful way. In this case, the state is:
-* A screenshot of the game (IMG)
-* Joystick and trigger input (INP)
-* The camera vector (i.e. the direction the player is looking at) (CAM)
-* The car's velocity projected onto the camera vector (VEL)
-* The car's health-delta between the current and previous frame (DMG)
+# How to run \[WIP\]
+1. pip-install all of the python requirements. 
+2. Copy everything in the `build` folder into the game directory (i.e. where the .exe is located). 
+2. Install HidHide (https://github.com/nefarius/HidHide) and ViGEmBus (https://github.com/nefarius/ViGEmBus/releases)
+3. Block all controller inputs to GTA using HidHide.
+4. Run `python main.py controller` to start the controller intercept thread. 
+5. Run `python main.py train` to start the model training thread. 
+6. Launch GTA and load into a singleplayer free-roam save.
+7. Press backspace.  
 
-The actor outputs a vector that replaces INP, called ACT. 
-
-The reward is 1 if DMG is 0, and -DMG otherwise.
-
-The idea is that the model might learn some key things from this information: 
-* Whether something is an obstacle
-* The velocity of an obstacle relative to the player's vehicle 
-* A mapping from controller input space to acceleration in game space 
-* Whether or not the controller input will result in a crash
-
-The model should run quite fast, so I've tried to encode as much of this information as possible into the architecture. The hope is to avoid 'LiDAR' methods (i.e. depth mapping and such). 
-
-# Dependencies
-* ScriptHookV.dll (v3586.0 / 889.22)
-* PyTorch
-* VigEmBus
-* HidHide
-
-The rest of the dependencies can be installed using the .NET and python package managers. 
-
-# Running the code
-You'll want to build the C# project in Visual Studio, then copy the release files into the ScriptHookV scripts folder. 
-
-**You'll also have to run HidHide for your controller on GTA V**, since the script works by simulating a virtual controller and the game won't recognize it unless it's the only one. 
-
-Then, run `controller.py`, before starting GTA. This will launch the VigEmBus virtual controller loop. You'll want to run this in its own python process if you want to modify the training loop without having to restart the game. 
-
-Next, run `training.py` to start the training loop. Now you can launch GTA V and enter a vehicle, at which point training will start. 
+# Python requirements 
+`torch`, `numpy`, `bettercam`
