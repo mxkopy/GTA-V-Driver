@@ -13,4 +13,4 @@ This (in progress!) repo is an attempt at making the streets of Los Santos safer
 7. Press backspace.  
 
 # Python requirements 
-torch, torchvision, cupy, bettercam
+torch, torchvision, cupy

@@ -13,6 +13,7 @@ import torchvision
 import math
 import mmap
 import cupy
+import numpy as np
 # import msgs_pb2
 from msgs_pb2 import ControllerState
 from google.protobuf.message import Message
@@ -112,77 +113,34 @@ class Transition(TransitionTuple):
         else:
             return self.__class__( *(x[idx] for x in self))
 
-# print(torch.cuda.is_available())
-# print(torch.cuda.current_device())
-# print(cupy.cuda.)
-# exit()
-# Takes screenshots using bettercam
 class VideoState:
 
-    def __init__(self, queue_length=100, grayscale=True):
-        # The bettercam repo is kind of broken
-        # TODO: Honestly I should look into how it works under the hood & just elide it as a dependency
-        from bettercam.processor.cupy_processor import CupyProcessor
-        CupyProcessor.process_cvtcolor = lambda self, image: image
-        # self.queue = FrameQueue(queue_length)
-        self.sct = bettercam.create(device_idx=0, nvidia_gpu=True)
-        self.grayscale = grayscale
-        self.cudaArrayMemoryPtr = cupy.cuda.runtime.malloc(1081 * 1920 * 4)
-        self.cudaArrayMemory = cupy.cuda.UnownedMemory(self.cudaArrayMemoryPtr, 1081 * 1920 * 4, owner=self, device_id=0)
-        self.cudaArrayInfo = mmap.mmap(-1, 96, "cudaArrayInfo")
+    def __init__(self, queue_length=100, depth=True):
+        self.depth = depth
+        cudaArrayInfo = mmap.mmap(-1, 64 + 32, "CudaD3D11TextureArray1")
+        memhandle = cudaArrayInfo.read(64)
+        components, bpp, pitch, height = unpack("@4P", cudaArrayInfo.readline())
+        arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memhandle)
+        membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=self, device_id=0)
+        self.cuda_array = cupy.ndarray(shape=(height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
 
-    def getCudaArray(self):
-        self.cudaArrayInfo.seek(0)
-        # memptr = cupy.cuda.MemoryPointer(self.cudaArrayMemory, 0)
-        memHandle = cupy.cuda.runtime.ipcGetMemHandle(self.cudaArrayMemoryPtr)
-        print(memHandle)
-        self.cudaArrayInfo.write(memHandle)
-        self.cudaArrayInfo.flush()
-        # memHandle = self.cudaArrayInfo.read(64)
-        # ptr, height, width, bpp = unpack("@4P", self.cudaArrayInfo.readline())
-        # print(memHandle)
-        # print(ptr, height, width, bpp)
-        # arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memHandle)
-        # arrayPtr = ptr
-        # cupy.cuda.runtime.
+    def linearize_depth(array, far=100000, C=2):
+        return (torch.pow(C*far+1,array)-1) / C
+    
 
-
-        # membuffer = cupy.cuda.UnownedMemory(arrayPtr, height * width, owner=self, device_id=0)
-        
-        return cupy.ndarray(shape=(1081, 1920), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(self.cudaArrayMemory, 0))
-
-    # SIDE_NOTE: Amazing one-liner to visualize stuff
-    # Image.fromarray((img.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)).show()
-
-    # Takes a screenshot of the screen & returns it as a downsampled tensor
-    # TODO: Implement reading tensor from pointer to data preprocessed by the directx hook  
     def pop(self) -> torch.Tensor:
-
-        # torch.cuda.dev
-        arr = self.getCudaArray()
-        if arr.sum() != 0:
-            from PIL import Image
-            Image.fromarray(cupy.asnumpy(arr), mode="L").show()
-            exit()
-        # print(arr)
-        # print(arr)
-        # print(arr)
-        tensor = torch.from_dlpack(arr)
-        print(tensor)
-        img = self.sct.grab()
-        while img is None:
-            img = self.sct.grab()
-        img = torch.as_tensor(img, device=config.device)
-        img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
-        if self.grayscale:
-            img = torchvision.transforms.functional.rgb_to_grayscale(img)
-        img = img.to(dtype=torch.float16) / 255
+        tensor = torch.from_dlpack(self.cuda_array)
+        if self.depth:
+            img = VideoState.linearize_depth(tensor)
+        else:
+            img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
+            if self.grayscale:
+                img = torchvision.transforms.functional.rgb_to_grayscale(img)
+            img = img.to(dtype=torch.float16) / 255
         img = torch.nn.functional.interpolate(img, config.state_sizes['image'][1:], mode='bilinear', antialias=True)
-        img = (255 * img).to(dtype=torch.uint8)
+        # img = (255 * img).to(dtype=torch.uint8)
         return img
-        # self.queue.append(img)
-        # return self.queue.collate(f=lambda batch: FrameQueue.polynomial_decay(batch, p=2)) / 255
-
+        
     def display(self):
         import numpy as np
         from PIL import Image
@@ -193,15 +151,6 @@ class VideoState:
         else:
             img = img.squeeze().permute(1, 2, 0).cpu().numpy()
             Image.fromarray(((img / img.max())*255).astype(np.uint8)).show()
-
-# print(torch.cuda.device_count())
-# exit()
-# print(torch.cuda.is_available())
-# print(torch.version.cuda)
-# print(cupy.is_available())
-# print(cupy.cuda.get_cuda_path())
-# print(cupy.cuda.get_local_runtime_version())
-# exit()
 
 class FrameQueue:
 
