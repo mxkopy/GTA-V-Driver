@@ -6,7 +6,7 @@
 using Microsoft::WRL::ComPtr;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Util
-static bool debugged = false;
+
 static std::ofstream logfile("dxinterop.log");
 
 #ifndef NDEBUG
@@ -147,6 +147,8 @@ UINT GetBytesPerPixelFromDXGIFormat(DXGI_FORMAT Format)
     return (ChannelFormat.x + ChannelFormat.y + ChannelFormat.z + ChannelFormat.w) / 8;
 }
 
+// Sets up CUDA memory and mmaps its IPC handle & useful info out to an anonymous memory mapped file
+
 struct CudaD3D11TextureArray
 {
     inline static CudaD3D11TextureArray* Instances[10] = { 0 };
@@ -235,95 +237,73 @@ struct CudaD3D11TextureArray
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Hooks
 
-// Depth info buffer, gets copied to cuda memory
-// Unfortunately there doesn't seem to be a straightforward way to read the depth stencil texture directly into cuda memory
-// So we have to have a sort of 'staging' buffer that 
+// Unfortunately there doesn't seem to be a straightforward way to read the depth stencil texture directly into cuda memory.
+// (see the section for cudaGraphicsD3D11RegisterResource in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__D3D11.html)
+// So we have to have a 'CUDA-staging texture' between the depth stencil texture w/ a CUDA-compatible format.
+// We'll write to this texture using a compute shader, whose inputs we set up here.
+// The input to the compute shader is an SRV (Shader Resource View) bound to the depth stencil's backing texture,
+// and the output is a UAV (Unordered Access View) bound to the CUDA-staging texture. 
 
-void CreateDepthTextureBuffer
+void SetupComputeShaderResources
 (
+
     ComPtr<ID3D11Device> Device,
     ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    int BindFlags,
-    DXGI_FORMAT Format,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
+    ComPtr<ID3D11ShaderResourceView>& ShaderResourceView,
+    ComPtr<ID3D11Texture2D>& DepthTexture,
+    ComPtr<ID3D11UnorderedAccessView>& UnorderedAccessView
+
 ) {
+    ComPtr<ID3D11Texture2D> DepthStencilTexture;
     D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    GetTextureFromView(DepthStencilView, &DepthStencilTextureDesc);
-
-    D3D11_TEXTURE2D_DESC BufferDesc;
-    BufferDesc.Width = DepthStencilTextureDesc.Width;
-    BufferDesc.Height = DepthStencilTextureDesc.Height;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.ArraySize = 1;
-    BufferDesc.Format = Format;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.SampleDesc.Quality = 0;
-    BufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    BufferDesc.BindFlags = BindFlags;
-    BufferDesc.CPUAccessFlags = 0;
-    BufferDesc.MiscFlags = 0;
-
-    ERR(Device->CreateTexture2D(&BufferDesc, NULL, &DepthTextureBuffer));
-}
-
-void CreateDepthTextureBuffer
-(
-    ComPtr<ID3D11DeviceContext> DeviceContext,
-    ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    int BindFlags,
-    DXGI_FORMAT Format,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
-) {
-    ComPtr<ID3D11Device> Device;
-    DeviceContext->GetDevice(&Device);
-    CreateDepthTextureBuffer(Device, DepthStencilView, BindFlags, Format, DepthTextureBuffer);
-}
-
-// For reading from depth stencil texture
-// Should convert formats, i.e. DXGI_FORMAT_R32G8X24_TYPELESS -> DXGI_FORMAT_R32X8X24_TYPELESS 
-
-void CreateDepthStencilShaderResourceView
-(
-    ComPtr<ID3D11Device> Device,
-    ComPtr<ID3D11Texture2D> DepthStencilTexture,
-    ComPtr<ID3D11ShaderResourceView>& ShaderResourceView
-) {
-    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    DepthStencilTexture->GetDesc(&DepthStencilTextureDesc);
+    GetTextureFromView(DepthStencilView, DepthStencilTexture, &DepthStencilTextureDesc);
 
     D3D11_SHADER_RESOURCE_VIEW_DESC ShaderResourceViewDesc;
     ShaderResourceViewDesc.Format = GetDepthFormatFromDepthStencilFormat(DepthStencilTextureDesc.Format);
     ShaderResourceViewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     ShaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
     ShaderResourceViewDesc.Texture2D.MipLevels = -1;
-
     ERR(Device->CreateShaderResourceView(DepthStencilTexture.Get(), &ShaderResourceViewDesc, ShaderResourceView.GetAddressOf()));
-}
 
-// For writing to depth texture 
-// Depth texture should have a depth-only format (e.g. DXGI_FORMAT_R32_FLOAT), so no need to convert
-
-void CreateDepthStencilUnorderedAccessView
-(
-    ComPtr<ID3D11Device> Device,
-    ComPtr<ID3D11Texture2D> DepthStencilBuffer,
-    ComPtr<ID3D11UnorderedAccessView>& UnorderedAccessView
-) {
-    D3D11_TEXTURE2D_DESC DepthStencilBufferDesc;
-    DepthStencilBuffer->GetDesc(&DepthStencilBufferDesc);
+    D3D11_TEXTURE2D_DESC DepthTextureDesc;
+    DepthTextureDesc.Width = DepthStencilTextureDesc.Width;
+    DepthTextureDesc.Height = DepthStencilTextureDesc.Height;
+    DepthTextureDesc.MipLevels = 1;
+    DepthTextureDesc.ArraySize = 1;
+    DepthTextureDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    DepthTextureDesc.SampleDesc.Count = 1;
+    DepthTextureDesc.SampleDesc.Quality = 0;
+    DepthTextureDesc.Usage = D3D11_USAGE_DEFAULT;
+    DepthTextureDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    DepthTextureDesc.CPUAccessFlags = 0;
+    DepthTextureDesc.MiscFlags = 0;
+    ERR(Device->CreateTexture2D(&DepthTextureDesc, NULL, DepthTexture.GetAddressOf()));
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC UnorderedAccessViewDesc;
-    UnorderedAccessViewDesc.Format = DepthStencilBufferDesc.Format;
+    UnorderedAccessViewDesc.Format = DepthTextureDesc.Format;
     UnorderedAccessViewDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
     UnorderedAccessViewDesc.Texture2D.MipSlice = 0;
+    ERR(Device->CreateUnorderedAccessView(DepthTexture.Get(), &UnorderedAccessViewDesc, UnorderedAccessView.GetAddressOf()));
 
-    ERR(Device->CreateUnorderedAccessView(DepthStencilBuffer.Get(), &UnorderedAccessViewDesc, UnorderedAccessView.GetAddressOf()));
 }
 
+void SetupComputeShaderResources
+(
 
-using ClearDepthStencilViewFunction = void(__thiscall*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
-static ClearDepthStencilViewFunction ClearDepthStencilView = NULL;
+    ComPtr<ID3D11DeviceContext> DeviceContext,
+    ComPtr<ID3D11DepthStencilView> DepthStencilView,
+    ComPtr<ID3D11ShaderResourceView>& ShaderResourceView,
+    ComPtr<ID3D11Texture2D>& DepthTextureBuffer,
+    ComPtr<ID3D11UnorderedAccessView>& UnorderedAccessView
 
+) {
+    ComPtr<ID3D11Device> Device;
+    DeviceContext->GetDevice(&Device);
+    SetupComputeShaderResources(Device, DepthStencilView, ShaderResourceView, DepthTextureBuffer, UnorderedAccessView);
+}
+
+// Compute shader for converting DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS to DXGI_FORMAT_R32_FLOAT
+// TODO: Add separate UAV for stencil
 void CreateComputeShader
 (
     ComPtr<ID3D11Device> Device, 
@@ -392,71 +372,85 @@ void RunComputeShader
 
 }
 
+using ClearDepthStencilViewFunction = void(__thiscall*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
+static ClearDepthStencilViewFunction ClearDepthStencilView = NULL;
 
 void ClearDepthStencilViewHook
 (
+
     ID3D11DeviceContext* pDeviceContext, 
     ID3D11DepthStencilView* pDepthStencilView, 
     UINT clearFlags, 
     FLOAT depth, 
     UINT8 stencil
-) {
 
+) {
     ComPtr<ID3D11DeviceContext> DeviceContext = pDeviceContext;
+    static ComPtr<ID3D11DepthStencilView> DepthStencilView = pDepthStencilView;
+
+    static ID3D11DepthStencilView* SentinelDSV;
+    static ID3D11DepthStencilView* BindDSV;
+    static ID3D11DepthStencilView* LastDSV;
+    static ID3D11DepthStencilState* DepthStencilState;
+    static D3D11_DEPTH_STENCIL_DESC DepthStencilStateDesc;
+    static bool DepthStencilEnabledLastFrame;
+
+    DeviceContext->OMGetDepthStencilState(&DepthStencilState, NULL);
+    DepthStencilState->GetDesc(&DepthStencilStateDesc);
+
+    // There's some strange game you have to play to bind the right depth stencil view
+    // and copy out the texture at the right time
+
+    if (SentinelDSV == nullptr && DepthStencilStateDesc.DepthEnable) SentinelDSV = pDepthStencilView;
+    if (BindDSV == nullptr && pDepthStencilView == SentinelDSV && !DepthStencilStateDesc.DepthEnable && !DepthStencilEnabledLastFrame) BindDSV = LastDSV;
+
+    // After we've got BindDSV we can start setting up all the IPC-related memory
+    // For whatever reason, CUDA doesn't support mapping the depth buffer so there's
+    // a bit of a process:
+    // 
+    // 1. Get the depth stencil view's texture and bind it to a shader resource view
+    // 2. Create the CUDA-staging texture and bind it to an unordered access view 
+    // 3. Allocate CUDA memory & create its IPC memory handle
+    // 4. When appropriate, run the compute shader to write to (2) and map & copy (2) to (3) via CUDA
 
     static CudaD3D11TextureArray CudaArray;
     static ComPtr<ID3D11ComputeShader> ComputeShader;
 
-    static ComPtr<ID3D11DepthStencilView> DepthStencilView;
     static ComPtr<ID3D11Texture2D> DepthStencilTexture;
     static CD3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    static ComPtr<ID3D11ShaderResourceView> DepthStencilShaderResourceView;
+
+    static ComPtr<ID3D11ShaderResourceView> ShaderResourceView;
     static ComPtr<ID3D11Texture2D> DepthStencilBuffer;
-    static ComPtr<ID3D11UnorderedAccessView> DepthStencilUnorderedAccessView;
+    static ComPtr<ID3D11UnorderedAccessView> UnorderedAccessView;
 
-    // The RTV is unbinded (unbound?) when the depth test is done, or something like that. I don't know for sure
-    // In any case the real depth buffer is the one right before RTV gets NULL'd out
-    // So we keep track of the last RTV, and if the current one is about to be NULL, the previous one corresponds w/ the true DTV
-
-    static ID3D11RenderTargetView* pRenderTargetView;
-    static ID3D11RenderTargetView* pLastRenderTargetView;
-    static ID3D11RenderTargetView* pTrueRTV;
-
-    pLastRenderTargetView = pRenderTargetView;
-    DeviceContext->OMGetRenderTargets(1, &pRenderTargetView, &DepthStencilView);
-
-    if (pRenderTargetView == nullptr && pLastRenderTargetView != nullptr && pTrueRTV == nullptr)
+    // 1 - 3
+    if(BindDSV != nullptr && pDepthStencilView == BindDSV && CudaArray.Memory == nullptr)
     {
-        pTrueRTV = pLastRenderTargetView;
-    }
-
-    if (pRenderTargetView == pTrueRTV && CudaArray.Memory == nullptr)
-    {
+        LOG("setup");
         GetTextureFromView(DepthStencilView, DepthStencilTexture, &DepthStencilTextureDesc);
-        DEBUG_TEXTURE2D(DepthStencilTexture, "DepthStencilTexture");
-        CreateDepthTextureBuffer(DeviceContext, DepthStencilView, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, DXGI_FORMAT_R32_FLOAT, DepthStencilBuffer);
-        CreateDepthStencilShaderResourceView(Device, DepthStencilTexture, DepthStencilShaderResourceView);
-        CreateDepthStencilUnorderedAccessView(Device, DepthStencilBuffer, DepthStencilUnorderedAccessView);
+        SetupComputeShaderResources(DeviceContext, DepthStencilView, ShaderResourceView, DepthStencilBuffer, UnorderedAccessView);
         CreateComputeShader(Device, ComputeShader);
         CudaArray = CudaD3D11TextureArray(DepthStencilBuffer, 1);
     }
 
 
-    if (CudaArray.Memory != nullptr)
-    {
-        
+    // 4 - 5
+    if(pDepthStencilView == SentinelDSV && !DepthStencilStateDesc.DepthEnable && CudaArray.Memory != nullptr)
+    {   
         RunComputeShader
         (
             DeviceContext, 
-            ComputeShader, 
-            DepthStencilShaderResourceView, 
-            DepthStencilUnorderedAccessView, 
+            ComputeShader,
+            ShaderResourceView, 
+            UnorderedAccessView, 
             (DepthStencilTextureDesc.Width + 32) / 32,
             (DepthStencilTextureDesc.Height + 32) / 32
         );
-        CUERR(cudaDeviceSynchronize());
         CudaArray.Update();
     }
+
+    LastDSV                      = pDepthStencilView;
+    DepthStencilEnabledLastFrame = DepthStencilStateDesc.DepthEnable;
 
     return ClearDepthStencilView(pDeviceContext, pDepthStencilView, clearFlags, depth, stencil);
 }

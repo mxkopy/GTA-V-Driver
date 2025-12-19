@@ -13,16 +13,24 @@ print(components, bpp, pitch, height)
 
 arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memHandle)
 membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=__name__, device_id=0)
-
 array = cupy.ndarray(shape=(height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
+
 # import time
+# lastDepth = False
 # while True:
-#     print(array.max())
-#     time.sleep(1.0)
+#     depth_enabled, isRTV = struct.unpack("@2B", dbg.readline())
+#     # if isRTV and lastDepth == False:
+#     if not isRTV and not depth_enabled:
+#         far = 100000
+#         C = 2
+#         array = (np.pow(C*far+1,array)-1) / C
+#         array = cupy.asnumpy(array) * 255
+#         Image.fromarray(array).show()
+#         exit()
+#     lastDepth = depth_enabled
 
 far = 100000
 C = 2
 array = (np.pow(C*far+1,array)-1) / C
-
 array = cupy.asnumpy(array) * 255
 Image.fromarray(array).show()
