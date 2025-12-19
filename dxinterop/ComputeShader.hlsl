@@ -1,9 +1,8 @@
+Texture2D<float3> InputTexture : register(t);
+RWTexture2D<float> OutputTexture : register(u);
 
-Texture2D InputBuffer;
-
-
-[numthreads(1, 1, 1)]
-void main( uint3 DTid : SV_DispatchThreadID )
+[numthreads(64, 1, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
 {
-
+    OutputTexture[DTid.xy].r = InputTexture[DTid.xy].r;
 }

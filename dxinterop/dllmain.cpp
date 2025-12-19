@@ -118,116 +118,6 @@ void GetTextureFromView(ComPtr<ViewType> View, D3D11_TEXTURE2D_DESC* TextureDesc
     Texture->GetDesc(TextureDesc);
 }
 
-void CreateDepthStencilShaderResourceView
-(
-    ComPtr<ID3D11Device> Device, 
-    ComPtr<ID3D11DepthStencilView> DepthStencilView, 
-    ComPtr<ID3D11ShaderResourceView>& ShaderResourceView
-) {
-    ComPtr<ID3D11Texture2D> DepthStencilTexture;
-    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    GetTextureFromView(DepthStencilView, DepthStencilTexture, &DepthStencilTextureDesc);
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC ShaderResourceViewDesc;  
-    ShaderResourceViewDesc.Format = GetDepthFormatFromDepthStencilFormat(DepthStencilTextureDesc.Format);
-    ShaderResourceViewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    ShaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
-    ShaderResourceViewDesc.Texture2D.MipLevels = -1;
-
-    Device->CreateShaderResourceView(DepthStencilTexture.Get(), &ShaderResourceViewDesc, ShaderResourceView.GetAddressOf());
-}
-
-
-void CreateDepthTextureStagingBuffer
-(
-    ComPtr<ID3D11Device> Device,
-    ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
-)
-{
-    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    GetTextureFromView(DepthStencilView, &DepthStencilTextureDesc);
-
-    D3D11_TEXTURE2D_DESC BufferDesc;
-    BufferDesc.Width = DepthStencilTextureDesc.Width;
-    BufferDesc.Height = DepthStencilTextureDesc.Height;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.ArraySize = 1;
-    BufferDesc.Format = DXGI_FORMAT_R32G8X24_TYPELESS,
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.SampleDesc.Quality = 0;
-    BufferDesc.Usage = D3D11_USAGE_STAGING,
-    BufferDesc.BindFlags = 0;
-    BufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE;
-    BufferDesc.MiscFlags = 0;
-
-    ERR(Device->CreateTexture2D(&BufferDesc, NULL, &DepthTextureBuffer));
-}
-
-void CreateDepthTextureStagingBuffer
-(
-    ComPtr<ID3D11DeviceContext> DeviceContext,
-    ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
-)
-{
-    ComPtr<ID3D11Device> Device;
-    DeviceContext->GetDevice(&Device);
-    CreateDepthTextureStagingBuffer(Device, DepthStencilView, DepthTextureBuffer);
-}
-
-
-void CreateDepthTextureBuffer
-(
-    ComPtr<ID3D11Device> Device,
-    ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
-)
-{
-    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
-    GetTextureFromView(DepthStencilView, &DepthStencilTextureDesc);
-
-
-    D3D11_TEXTURE2D_DESC BufferDesc;
-    BufferDesc.Width = DepthStencilTextureDesc.Width;
-    BufferDesc.Height = DepthStencilTextureDesc.Height;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.ArraySize = 1;
-    BufferDesc.Format = DXGI_FORMAT_R32_FLOAT,
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.SampleDesc.Quality = 0;
-    BufferDesc.Usage = D3D11_USAGE_DYNAMIC,
-    BufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    BufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    BufferDesc.MiscFlags = 0;
-
-    //D3D11_TEXTURE2D_DESC BufferDesc;
-    //BufferDesc.Width = DepthStencilTextureDesc.Width;
-    //BufferDesc.Height = DepthStencilTextureDesc.Height;
-    //BufferDesc.MipLevels = 1;
-    //BufferDesc.ArraySize = 1;
-    //BufferDesc.Format = DXGI_FORMAT_R32_FLOAT,
-    //BufferDesc.SampleDesc.Count = 1;
-    //BufferDesc.SampleDesc.Quality = 0;
-    //BufferDesc.Usage = D3D11_USAGE_DEFAULT,
-    //BufferDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    //BufferDesc.CPUAccessFlags = 0;
-    //BufferDesc.MiscFlags = 0;
-
-    ERR(Device->CreateTexture2D(&BufferDesc, NULL, &DepthTextureBuffer));
-}
-
-void CreateDepthTextureBuffer
-(
-    ComPtr<ID3D11DeviceContext> DeviceContext,
-    ComPtr<ID3D11DepthStencilView> DepthStencilView,
-    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
-)
-{
-    ComPtr<ID3D11Device> Device;
-    DeviceContext->GetDevice(&Device);
-    CreateDepthTextureBuffer(Device, DepthStencilView, DepthTextureBuffer);
-}
 
 
 
@@ -345,10 +235,162 @@ struct CudaD3D11TextureArray
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Hooks
 
+// Depth info buffer, gets copied to cuda memory
+// Unfortunately there doesn't seem to be a straightforward way to read the depth stencil texture directly into cuda memory
+// So we have to have a sort of 'staging' buffer that 
+
+void CreateDepthTextureBuffer
+(
+    ComPtr<ID3D11Device> Device,
+    ComPtr<ID3D11DepthStencilView> DepthStencilView,
+    int BindFlags,
+    DXGI_FORMAT Format,
+    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
+) {
+    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
+    GetTextureFromView(DepthStencilView, &DepthStencilTextureDesc);
+
+    D3D11_TEXTURE2D_DESC BufferDesc;
+    BufferDesc.Width = DepthStencilTextureDesc.Width;
+    BufferDesc.Height = DepthStencilTextureDesc.Height;
+    BufferDesc.MipLevels = 1;
+    BufferDesc.ArraySize = 1;
+    BufferDesc.Format = Format;
+    BufferDesc.SampleDesc.Count = 1;
+    BufferDesc.SampleDesc.Quality = 0;
+    BufferDesc.Usage = D3D11_USAGE_DEFAULT;
+    BufferDesc.BindFlags = BindFlags;
+    BufferDesc.CPUAccessFlags = 0;
+    BufferDesc.MiscFlags = 0;
+
+    ERR(Device->CreateTexture2D(&BufferDesc, NULL, &DepthTextureBuffer));
+}
+
+void CreateDepthTextureBuffer
+(
+    ComPtr<ID3D11DeviceContext> DeviceContext,
+    ComPtr<ID3D11DepthStencilView> DepthStencilView,
+    int BindFlags,
+    DXGI_FORMAT Format,
+    ComPtr<ID3D11Texture2D>& DepthTextureBuffer
+) {
+    ComPtr<ID3D11Device> Device;
+    DeviceContext->GetDevice(&Device);
+    CreateDepthTextureBuffer(Device, DepthStencilView, BindFlags, Format, DepthTextureBuffer);
+}
+
+// For reading from depth stencil texture
+// Should convert formats, i.e. DXGI_FORMAT_R32G8X24_TYPELESS -> DXGI_FORMAT_R32X8X24_TYPELESS 
+
+void CreateDepthStencilShaderResourceView
+(
+    ComPtr<ID3D11Device> Device,
+    ComPtr<ID3D11Texture2D> DepthStencilTexture,
+    ComPtr<ID3D11ShaderResourceView>& ShaderResourceView
+) {
+    D3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
+    DepthStencilTexture->GetDesc(&DepthStencilTextureDesc);
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC ShaderResourceViewDesc;
+    ShaderResourceViewDesc.Format = GetDepthFormatFromDepthStencilFormat(DepthStencilTextureDesc.Format);
+    ShaderResourceViewDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    ShaderResourceViewDesc.Texture2D.MostDetailedMip = 0;
+    ShaderResourceViewDesc.Texture2D.MipLevels = -1;
+
+    ERR(Device->CreateShaderResourceView(DepthStencilTexture.Get(), &ShaderResourceViewDesc, ShaderResourceView.GetAddressOf()));
+}
+
+// For writing to depth texture 
+// Depth texture should have a depth-only format (e.g. DXGI_FORMAT_R32_FLOAT), so no need to convert
+
+void CreateDepthStencilUnorderedAccessView
+(
+    ComPtr<ID3D11Device> Device,
+    ComPtr<ID3D11Texture2D> DepthStencilBuffer,
+    ComPtr<ID3D11UnorderedAccessView>& UnorderedAccessView
+) {
+    D3D11_TEXTURE2D_DESC DepthStencilBufferDesc;
+    DepthStencilBuffer->GetDesc(&DepthStencilBufferDesc);
+
+    D3D11_UNORDERED_ACCESS_VIEW_DESC UnorderedAccessViewDesc;
+    UnorderedAccessViewDesc.Format = DepthStencilBufferDesc.Format;
+    UnorderedAccessViewDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+    UnorderedAccessViewDesc.Texture2D.MipSlice = 0;
+
+    ERR(Device->CreateUnorderedAccessView(DepthStencilBuffer.Get(), &UnorderedAccessViewDesc, UnorderedAccessView.GetAddressOf()));
+}
 
 
 using ClearDepthStencilViewFunction = void(__thiscall*)(ID3D11DeviceContext*, ID3D11DepthStencilView*, UINT, FLOAT, UINT8);
 static ClearDepthStencilViewFunction ClearDepthStencilView = NULL;
+
+void CreateComputeShader
+(
+    ComPtr<ID3D11Device> Device, 
+    ComPtr<ID3D11ComputeShader>& ComputeShader
+) {
+
+    const char Shader[] =
+    R"(
+        Texture2D<float3> InputTexture : register(t);
+        RWTexture2D<float> OutputTexture : register(u);
+
+        [numthreads(32, 32, 1)]
+        void main(uint3 DTid : SV_DispatchThreadID)
+        {
+            OutputTexture[DTid.xy].r = InputTexture[DTid.xy].r;
+        }
+    )";
+
+    ComPtr<ID3DBlob> ShaderBlob;
+    ComPtr<ID3DBlob> ErrorBlob;
+
+    HRESULT HR = D3DCompile
+    (
+        Shader,                             // SrcData
+        sizeof(Shader),                     // SrcDataSize
+        NULL,                               // SourceName
+        NULL,                               // Defines
+        D3D_COMPILE_STANDARD_FILE_INCLUDE,  // Include 
+        "main",                             // EntryPoint
+        "cs_5_0",                           // Target
+        NULL,                               // Flags1
+        NULL,                               // Flags2
+        ShaderBlob.GetAddressOf(),          // Code
+        ErrorBlob.GetAddressOf()            // ErrorMsgs
+    );
+
+    if (HR != S_OK) logfile << std::string((char*)ErrorBlob->GetBufferPointer(), ErrorBlob->GetBufferSize());
+    ERR(HR);
+    ERR(Device->CreateComputeShader(ShaderBlob->GetBufferPointer(), ShaderBlob->GetBufferSize(), NULL, ComputeShader.GetAddressOf()));
+}
+
+void RunComputeShader
+(
+    ComPtr<ID3D11DeviceContext> DeviceContext,
+    ComPtr<ID3D11ComputeShader> ComputeShader,
+    ComPtr<ID3D11ShaderResourceView> ShaderResourceView,
+    ComPtr<ID3D11UnorderedAccessView> UnorderedAccessView,
+    UINT X,
+    UINT Y
+) {
+
+    DeviceContext->CSSetShader(ComputeShader.Get(), NULL, NULL);
+    DeviceContext->CSSetShaderResources(0, 1, ShaderResourceView.GetAddressOf());
+    DeviceContext->CSSetUnorderedAccessViews(0, 1, UnorderedAccessView.GetAddressOf(), NULL);
+
+    DeviceContext->Dispatch(X, Y, 1);
+    DeviceContext->Flush();
+
+    DeviceContext->CSSetShader(nullptr, nullptr, 0);
+
+    ID3D11UnorderedAccessView* NullUAV[1] = { nullptr };
+    ID3D11ShaderResourceView* NullSRV[1] = { nullptr };
+
+    DeviceContext->CSSetUnorderedAccessViews(0, 1, NullUAV, nullptr);
+    DeviceContext->CSSetShaderResources(0, 1, NullSRV);
+
+}
 
 
 void ClearDepthStencilViewHook
@@ -363,10 +405,14 @@ void ClearDepthStencilViewHook
     ComPtr<ID3D11DeviceContext> DeviceContext = pDeviceContext;
 
     static CudaD3D11TextureArray CudaArray;
+    static ComPtr<ID3D11ComputeShader> ComputeShader;
 
     static ComPtr<ID3D11DepthStencilView> DepthStencilView;
     static ComPtr<ID3D11Texture2D> DepthStencilTexture;
+    static CD3D11_TEXTURE2D_DESC DepthStencilTextureDesc;
+    static ComPtr<ID3D11ShaderResourceView> DepthStencilShaderResourceView;
     static ComPtr<ID3D11Texture2D> DepthStencilBuffer;
+    static ComPtr<ID3D11UnorderedAccessView> DepthStencilUnorderedAccessView;
 
     // The RTV is unbinded (unbound?) when the depth test is done, or something like that. I don't know for sure
     // In any case the real depth buffer is the one right before RTV gets NULL'd out
@@ -384,57 +430,33 @@ void ClearDepthStencilViewHook
         pTrueRTV = pLastRenderTargetView;
     }
 
-    static std::vector<float> Depth;
-    static ComPtr<ID3D11Texture2D> DepthStencilStagingBuffer;
-
     if (pRenderTargetView == pTrueRTV && CudaArray.Memory == nullptr)
     {
-        GetTextureFromView(DepthStencilView, DepthStencilTexture);
+        GetTextureFromView(DepthStencilView, DepthStencilTexture, &DepthStencilTextureDesc);
         DEBUG_TEXTURE2D(DepthStencilTexture, "DepthStencilTexture");
-        CreateDepthTextureBuffer(DeviceContext, DepthStencilView, DepthStencilBuffer);
+        CreateDepthTextureBuffer(DeviceContext, DepthStencilView, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS, DXGI_FORMAT_R32_FLOAT, DepthStencilBuffer);
+        CreateDepthStencilShaderResourceView(Device, DepthStencilTexture, DepthStencilShaderResourceView);
+        CreateDepthStencilUnorderedAccessView(Device, DepthStencilBuffer, DepthStencilUnorderedAccessView);
+        CreateComputeShader(Device, ComputeShader);
         CudaArray = CudaD3D11TextureArray(DepthStencilBuffer, 1);
-
-        CreateDepthTextureStagingBuffer(DeviceContext, DepthStencilView, DepthStencilStagingBuffer);
-        Depth.resize(CudaArray.Extent.width * CudaArray.Extent.height);
     }
 
 
     if (CudaArray.Memory != nullptr)
     {
-        //DeviceContext->CopyResource(DepthStencilBuffer.Get(), DepthStencilTexture.Get());
-    
-        // TODO: Replace this all w/ a compute shader
-        DeviceContext->CopyResource(DepthStencilStagingBuffer.Get(), DepthStencilTexture.Get());
-
-        D3D11_MAPPED_SUBRESOURCE MappedSubresource1 = { 0 };
-        D3D11_MAPPED_SUBRESOURCE MappedSubresource2 = { 0 };
-        ERR(DeviceContext->Map(DepthStencilStagingBuffer.Get(), 0, D3D11_MAP_READ, 0, &MappedSubresource1));
-        ERR(DeviceContext->Map(DepthStencilBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &MappedSubresource2));
-        float* MappedData1 = (float*) MappedSubresource1.pData;
-        float* MappedData2 = (float*) MappedSubresource2.pData;
-
-        static bool logged;
-        if (!logged)
-        {
-            LOG("RP1 " << MappedSubresource1.RowPitch);
-            LOG("DP1 " << MappedSubresource1.DepthPitch);
-            LOG("");
-            LOG("RP2 " << MappedSubresource2.RowPitch);
-            LOG("DP2 " << MappedSubresource2.DepthPitch);
-            logged = true;
-        }
-       
-        for (int i = 0; i < MappedSubresource2.DepthPitch / sizeof(float); i++) MappedData2[i] = MappedData1[i*2];
         
-        DeviceContext->Unmap(DepthStencilBuffer.Get(), 0);
-        DeviceContext->Unmap(DepthStencilStagingBuffer.Get(), 0);
-        DeviceContext->Flush();
-
+        RunComputeShader
+        (
+            DeviceContext, 
+            ComputeShader, 
+            DepthStencilShaderResourceView, 
+            DepthStencilUnorderedAccessView, 
+            (DepthStencilTextureDesc.Width + 32) / 32,
+            (DepthStencilTextureDesc.Height + 32) / 32
+        );
         CUERR(cudaDeviceSynchronize());
-
         CudaArray.Update();
     }
-    //DeviceContext.Detach();
 
     return ClearDepthStencilView(pDeviceContext, pDepthStencilView, clearFlags, depth, stencil);
 }
@@ -455,11 +477,7 @@ static void HookClearDepthStencilView()
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// Main
 
-static cudaGraphicsResource_t CudaRenderTargetResource;
-
 static void presentCallback(void* chain) {
-    //LaunchDebugger();
-    //DebugBreak();
 
     static ComPtr<ID3D10Multithread> MultithreadContext;
 
@@ -510,19 +528,18 @@ static void presentCallback(void* chain) {
     }
 }
 
-BOOL APIENTRY DllMain( HMODULE hModule,
-                       DWORD  ul_reason_for_call,
-                       LPVOID lpReserved
-                     )
-{
-    int deviceCount = 0;
+BOOL APIENTRY DllMain
+(
+    HMODULE hModule,                   
+    DWORD  ul_reason_for_call,
+    LPVOID lpReserved
+) {
+    int DeviceCount = 0;
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-        LOG("Attached!");
-        //cudaGetDeviceCount(&deviceCount);
-        //LOG("Device count:");
-        //LOG(deviceCount);
+        cudaGetDeviceCount(&DeviceCount);
+        LOG("Attached! Cuda Device Count: " << DeviceCount << std::endl);
         presentCallbackRegister(presentCallback);
         break;
     case DLL_PROCESS_DETACH:

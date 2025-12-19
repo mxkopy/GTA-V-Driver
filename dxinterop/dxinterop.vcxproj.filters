@@ -46,12 +46,6 @@
     <Library Include="ScriptHookV.lib">
       <Filter>Source Files</Filter>
     </Library>
-    <Library Include="..\..\NVIDIA CUDA\lib\x64\cuda.lib">
-      <Filter>Source Files</Filter>
-    </Library>
-    <Library Include="..\..\NVIDIA CUDA\lib\x64\cudart_static.lib">
-      <Filter>Source Files</Filter>
-    </Library>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="ComputeShader.hlsl">

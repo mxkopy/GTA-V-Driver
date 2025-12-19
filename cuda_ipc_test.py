@@ -15,16 +15,14 @@ arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memHandle)
 membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=__name__, device_id=0)
 
 array = cupy.ndarray(shape=(height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
-# array = cupy.asnumpy(array / array.max())
-# array = array != 0
+# import time
+# while True:
+#     print(array.max())
+#     time.sleep(1.0)
 
-# print( np.sum(cupy.asnumpy(array) == 0) / (height * (pitch // bpp) ) )
-
-# array = cupy.asnumpy(array) * 255
-far = 100
+far = 100000
 C = 2
 array = (np.pow(C*far+1,array)-1) / C
 
 array = cupy.asnumpy(array) * 255
-print(array.max())
 Image.fromarray(array).show()
