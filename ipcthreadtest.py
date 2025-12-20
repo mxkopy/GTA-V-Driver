@@ -72,7 +72,8 @@ if __name__ == '__main__':
     #     file.flush()    
 
     if len(sys.argv) == 1:
-        from model import DeterministicPolicyGradient, DriverActorModel, DriverCriticModel
+        from ddpg import DeterministicPolicyGradient
+        from model import DriverActorModel, DriverCriticModel
         DeterministicPolicyGradient.compute_action = logging_hook(DeterministicPolicyGradient.compute_action, 'Compute Action')
         DeterministicPolicyGradient.update_actor = logging_hook(DeterministicPolicyGradient.update_actor, 'Updating Actor')
         DeterministicPolicyGradient.update_critic = logging_hook(DeterministicPolicyGradient.update_critic, 'Updating Critic')
@@ -83,6 +84,9 @@ if __name__ == '__main__':
         print("Starting training")
         ddpg.train()
 
+    if sys.argv[1] == 'game':
+        faux_game_thread()
+
     if sys.argv[1] == 'debug':
         from ipc import debug_flags, Flags
         if len(sys.argv) == 2:
@@ -91,10 +95,4 @@ if __name__ == '__main__':
             Flags().set_flag(int(sys.argv[2]), True)
         elif sys.argv[3] == '0':
             Flags().set_flag(int(sys.argv[2]), False)
-
         exit()
-    elif sys.argv[1] == 'controller':
-        controller = ControllerHandler()
-        t = controller.physical_controller_update_thread()
-        t.start()
-        controller.virtual_controller_update_thread()

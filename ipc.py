@@ -4,22 +4,23 @@ import time
 import msgs_pb2
 from google.protobuf.message import Message
 from google.protobuf.descriptor import FieldDescriptor
-N_FLAGS = 8
+N_FLAGS = 5
 FLAGS_TAG = "flags.ipc"
 IPC_SLEEP_DURATION = 1e-3
-
+    
 class FLAGS:
 
     REQUEST_GAME_STATE = 0
-    REQUEST_INPUT = 1
-    REQUEST_ACTION = 2
+    REQUEST_ACTION = 1
 
-    GAME_STATE_WRITTEN = 3
-    INPUT_WRITTEN = 4
-    ACTION_WRITTEN = 5
+    GAME_STATE_WRITTEN = 2
+    ACTION_WRITTEN = 3
 
-    RESET = 6
-    IS_TRAINING = 7
+    RESET = 4
+    IS_TRAINING = 5
+
+    REQUEST_INPUT = -1
+    INPUT_WRITTEN = -1
 
 class Flags:
 
@@ -205,19 +206,16 @@ class GameState(StateQueue, metaclass=FixedSizeState):
         game_state = StateQueue.pop(self)
         self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
         return (
-            (game_state.camera_direction.x, game_state.camera_direction.y, game_state.camera_direction.z), 
-            (game_state.velocity.x, game_state.velocity.y, game_state.velocity.z), 
-            game_state.damage,
+            (game_state.velocity.x, game_state.velocity.y, game_state.velocity.z),
+            game_state.damage
         )
 
 
 def debug_flags():
     flags = Flags()
     print(f'REQUEST_GAME_STATE: {flags.get_flag(FLAGS.REQUEST_GAME_STATE)}')
-    print(f'REQUEST_INPUT: {flags.get_flag(FLAGS.REQUEST_INPUT)}')
     print(f'REQUEST_ACTION: {flags.get_flag(FLAGS.REQUEST_ACTION)}')
     print(f'GAME_STATE_WRITTEN: {flags.get_flag(FLAGS.GAME_STATE_WRITTEN)}')
-    print(f'INPUT_WRITTEN: {flags.get_flag(FLAGS.INPUT_WRITTEN)}')
     print(f'ACTION_WRITTEN: {flags.get_flag(FLAGS.ACTION_WRITTEN)}')
     print(f'RESET: {flags.get_flag(FLAGS.RESET)}')
     print(f'IS_TRAINING: {flags.get_flag(FLAGS.IS_TRAINING)}')

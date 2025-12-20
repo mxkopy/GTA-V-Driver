@@ -18,10 +18,8 @@ namespace IPC
     enum FLAGS: int
     {
         REQUEST_GAME_STATE,
-        REQUEST_INPUT,
         REQUEST_ACTION,
         GAME_STATE_WRITTEN,
-        INPUT_WRITTEN,
         ACTION_WRITTEN,
         RESET,
         IS_TRAINING
@@ -29,7 +27,7 @@ namespace IPC
 
     public class Flags
     {
-        public const int NUMBER_OF_FLAGS = 8;
+        public const int NUMBER_OF_FLAGS = 5;
         public const string FLAGS_TAG = "flags.ipc";
 
         private readonly MemoryMappedFile ipc_flags_f;

@@ -19,6 +19,7 @@ from msgs_pb2 import ControllerState
 from google.protobuf.message import Message
 from collections import namedtuple
 from typing import Iterable, TypeVarTuple, TypeAlias
+from controller import VirtualController
 from ipc import GameState, VirtualControllerState, PhysicalControllerState, FLAGS
 from struct import unpack
 
@@ -122,14 +123,13 @@ class VideoState:
         components, bpp, pitch, height = unpack("@4P", cudaArrayInfo.readline())
         arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memhandle)
         membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=self, device_id=0)
-        self.cuda_array = cupy.ndarray(shape=(height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
+        self.cuda_array = cupy.ndarray(shape=(components, height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
 
-    def linearize_depth(array, far=100000, C=2):
+    def linearize_depth(array, far=10000, C=0.001):
         return (torch.pow(C*far+1,array)-1) / C
     
-
     def pop(self) -> torch.Tensor:
-        tensor = torch.from_dlpack(self.cuda_array)
+        tensor = torch.from_dlpack(self.cuda_array).unsqueeze(0)
         if self.depth:
             img = VideoState.linearize_depth(tensor)
         else:
@@ -221,29 +221,18 @@ class Environment:
     def __init__(self, queue_length=100):
         self.video_state = VideoState(queue_length=queue_length)
         self.game_state = GameState()
-        self.physical_controller_state = PhysicalControllerState()
-        self.virtual_controller_state = VirtualControllerState()
-        self.physical_controller_state.set_flag(FLAGS.REQUEST_INPUT, True)
-        self.virtual_controller_state.set_flag(FLAGS.REQUEST_ACTION, True)
+        self.virtual_controller = VirtualController()
     
     def observe(self) -> State:
         video_state: torch.Tensor = self.video_state.pop()
         game_state: tuple = self.game_state.pop()
-        physical_controller_state: torch.Tensor = torch.tensor(self.physical_controller_state.pop()).unsqueeze(0)
         game_state = (torch.tensor([x] if not isinstance(x, Iterable) else x).unsqueeze(0) for x in game_state)
-        return State(video_state, physical_controller_state, *game_state)
+        return State(video_state, *game_state)
 
     def perform_action(self, action: torch.Tensor) -> tuple[Reward, NextState, Final]:
-        action = action.view(-1)
-        virtual_controller_state = ControllerState(
-            left_joystick_x=action[0],
-            left_joystick_y=action[1], 
-            left_trigger=action[2],
-            right_trigger=action[3]
-        )
-        self.virtual_controller_state.push(virtual_controller_state)
+        self.virtual_controller.update(tuple(*action.tolist()))
         nextstate: NextState = self.observe()
-        reward: Reward = torch.dot(nextstate.velocity.view(-1), nextstate.camera_direction.view(-1)).unsqueeze(0)
+        reward: Reward = -nextstate.damage
         return (nextstate, reward, nextstate.damage > 0)
     
     def pause_training(self):

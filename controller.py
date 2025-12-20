@@ -100,5 +100,14 @@ class ControllerHandler(xinput.EventHandler):
         self.virtual_controller_update_thread()
         return thread
 
+
+class VirtualController:
+
+    def __init__(self):
+        self.output_pad = ControllerHandler.initialize_output_pad(self)
+    
+    def update(self, action: tuple[float, float, float, float]):
+        ControllerHandler.virtual_controller_update(self, action)
+
 if __name__ == '__main__':
     ControllerHandler().start()

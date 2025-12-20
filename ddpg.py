@@ -38,7 +38,7 @@ class DeterministicPolicyGradient:
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters())
         self.critic_optimizer = torch.optim.AdamW(self.critic.parameters())
 
-    def compute_action(self, state: State, noise_scale: float = 1.0) -> Action:
+    def compute_action(self, state: State, noise_scale: float = 0) -> Action:
         action: Action = self.actor(state)
         noise: torch.Tensor = self.noise_distribution.sample(action.size()) * noise_scale
         noise: torch.Tensor = noise.to(device=action.device)
@@ -57,11 +57,16 @@ class DeterministicPolicyGradient:
         n = offset
         state: State = self.environment.observe()
         final: bool = False
+        r = torch.rand(1).item()
+
         with torch.no_grad(), torch.autocast(device_type=config.device):
             while n < steps + offset and not final:
                 n += 1
                 state: State = state.to(device=config.device)
                 action: Action = self.compute_action(state)
+                action[:, 2] = 0
+                action[:, 3] = r
+                print(action)
                 transition: Transition = self.act(state, action)
                 self.replay_buffer += transition.to(device='cpu')
                 state: State = transition.nextstate
@@ -78,7 +83,9 @@ class DeterministicPolicyGradient:
 
     def update_actor(self, batch):
         self.actor_optimizer.zero_grad()
-        actor_loss: torch.Tensor = -self.critic(batch.state, self.actor(batch.state)).mean(dim=0).sum()
+        actions = self.actor(batch.state)
+        actor_loss: torch.Tensor = -self.critic(batch.state, actions).mean(dim=0).sum()
+        actor_loss += actions[:, 0:2].square().mean(dim=0).sum() * 0.001
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
         self.actor_optimizer.step()
@@ -102,11 +109,12 @@ class DeterministicPolicyGradient:
         self.environment.resume_training()
 
     def train(self, episodes=float('inf')):
-        print('Training')
         n = 0
         while n < episodes:
             n += 1
             self.environment.game_state.set_flag(FLAGS.IS_TRAINING, True)
+            print('Training')
             self.run_episode()
             self.environment.game_state.set_flag(FLAGS.IS_TRAINING, False)
+            print('Optimizing')
             self.optimize_step()
