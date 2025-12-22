@@ -131,12 +131,8 @@ class VideoState:
             return cupy.ndarray(shape=(components, height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
         return None
 
-    # def linearize_depth(array, C=1.0, far=10000):
-    #     return (torch.pow(C*far+1,array)-1) / C
-
     def linearize_depth(array, near, far):
         y = (torch.pow(far/near,array)-1) * (near / far)
-        # return y * 128
         return ((y * near) / far)
     
     def pop(self) -> torch.Tensor:
@@ -151,7 +147,7 @@ class VideoState:
                 from ipc import Channel
                 self.nearclipfarclip = Channel(8, "NearClipFarClip")
             near, far = unpack('@2f', self.nearclipfarclip.pop_nbl())
-            img = VideoState.linearize_depth(tensor, far, near).unsqueeze(0)
+            img = VideoState.linearize_depth(tensor, near, far).unsqueeze(0)
         else:
             img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
             if self.grayscale:
