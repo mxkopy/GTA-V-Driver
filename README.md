@@ -2,7 +2,7 @@
 
 This (in progress!) repo is an attempt at making the streets of Los Santos safer from automotive injury. It implements Deep Deterministic Policy Gradient a la [OpenAI](https://spinningup.openai.com/en/latest/algorithms/ddpg.html) to train a model to avoid crashing a car. 
 
-# How to run \[WIP\]
+# How to run
 1. Install ScripthookV + ScripthookVDotNet. Also install ViGEmBus.
 2. pip-install all of the python requirements. 
 3. Copy everything in the `build` folder into the game directory (i.e. where the .exe is located). 
