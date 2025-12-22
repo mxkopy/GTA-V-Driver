@@ -48,8 +48,6 @@ public class GrandTheftAutoReinforcementLearning : Script
         Game.Player.Wanted.SetWantedLevel(0, false);
         Game.Player.Wanted.ApplyWantedLevelChangeNow(false);
 
-        GTA.Native.Hash.GET_FINAL_RENDERED_CAM_NEAR_CLIP
-
         if (V != null && Flags.GetFlag(FLAGS.IS_TRAINING))
         {
             Flags.WaitUntil(FLAGS.REQUEST_GAME_STATE, true);

@@ -1,12 +1,4 @@
-# import cupy as cp
-
-# a = cp.empty((10,))
-# a[:] = 3
-# print(a)
-# exit()
-
 import torch
-import bettercam
 import random
 import config
 import torchvision
@@ -14,7 +6,6 @@ import math
 import mmap
 import cupy
 import numpy as np
-# import msgs_pb2
 from msgs_pb2 import ControllerState
 from google.protobuf.message import Message
 from collections import namedtuple

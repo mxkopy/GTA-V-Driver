@@ -30,6 +30,3 @@ class VirtualController:
         VirtualController.output_pad.left_trigger_float(VirtualController.clamp(lt, min_val=0))
         VirtualController.output_pad.right_trigger_float(VirtualController.clamp(rt, min_val=0))
         VirtualController.output_pad.update()
-
-if __name__ == '__main__':
-    ControllerHandler().start()
