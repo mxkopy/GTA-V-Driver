@@ -268,9 +268,6 @@ copy /Y "$(ProjectDir)$(Platform)\$(Configuration)\$(TargetName)$(TargetExt)" "E
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="ScriptHookV.lib" />
-  </ItemGroup>
-  <ItemGroup>
     <FxCompile Include="ComputeShader.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
@@ -288,6 +285,9 @@ copy /Y "$(ProjectDir)$(Platform)\$(Configuration)\$(TargetName)$(TargetExt)" "E
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="scripthookv_sdk\lib\ScriptHookV.lib" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

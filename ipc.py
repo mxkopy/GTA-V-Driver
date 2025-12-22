@@ -204,7 +204,6 @@ class GameState(StateQueue, metaclass=FixedSizeState):
     def pop(self: StateQueue):
         self.set_flag(FLAGS.REQUEST_GAME_STATE, True)
         game_state = StateQueue.pop(self)
-        self.set_flag(FLAGS.REQUEST_GAME_STATE, False)
         return (
             (game_state.velocity.x, game_state.velocity.y, game_state.velocity.z),
             game_state.damage

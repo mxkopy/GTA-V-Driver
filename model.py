@@ -64,7 +64,7 @@ class DriverActorModel(DriverModelBase):
 
     def forward(self, state: State):
         action = super().forward(state)
-        # action[:, 0:2] = torch.tanh(action[:, 0:2])
+        action[:, 0:2] = torch.tanh(action[:, 0:2])
         return action
 
     def jit(self):

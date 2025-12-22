@@ -43,13 +43,13 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Library Include="ScriptHookV.lib">
-      <Filter>Source Files</Filter>
-    </Library>
-  </ItemGroup>
-  <ItemGroup>
     <FxCompile Include="ComputeShader.hlsl">
       <Filter>Source Files</Filter>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Library Include="scripthookv_sdk\lib\ScriptHookV.lib">
+      <Filter>Source Files</Filter>
+    </Library>
   </ItemGroup>
 </Project>

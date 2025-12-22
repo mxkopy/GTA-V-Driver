@@ -23,7 +23,7 @@ public class GrandTheftAutoReinforcementLearning : Script
     static readonly Vector3 HIGHWAY = new Vector3(-704.8778f, -2111.786f, 13.51563f);
     static readonly Vector3 HIGHWAY_DIRECTION = new Vector3(-0.7894784f, -0.6133158f, 0.02382357f);
     static GameState GameState = new GameState();
-    static Flags flags = GameState.flags;
+    static Flags Flags = GameState.flags;
     static Random rand = new Random();
 
     //public delegate void PresentCallback([MarshalAs(UnmanagedType.LPStruct)] IntPtr SwapChain);
@@ -38,6 +38,8 @@ public class GrandTheftAutoReinforcementLearning : Script
         Game.Player.Wanted.SetEveryoneIgnorePlayer(true);
         Game.Player.Wanted.SetPoliceIgnorePlayer(true);
 
+        Flags.SetFlag(FLAGS.REQUEST_ACTION, true);
+
     }
     private void OnTick(object sender, EventArgs e)
     {
@@ -46,33 +48,36 @@ public class GrandTheftAutoReinforcementLearning : Script
         Game.Player.Wanted.SetWantedLevel(0, false);
         Game.Player.Wanted.ApplyWantedLevelChangeNow(false);
 
-        if (V != null)
+        GTA.Native.Hash.GET_FINAL_RENDERED_CAM_NEAR_CLIP
+
+        if (V != null && Flags.GetFlag(FLAGS.IS_TRAINING))
         {
+            Flags.WaitUntil(FLAGS.REQUEST_GAME_STATE, true);
+
             GameplayCamera.ForceRelativeHeadingAndPitch(0, 0, 0);
             GTA.Native.Function.Call(GTA.Native.Hash.FORCE_BONNET_CAMERA_RELATIVE_HEADING_AND_PITCH, 0, 0, 0);
-            if (flags.GetFlag((int)FLAGS.IS_TRAINING))
-            {
-                Vector3 CameraDirection = Vector3.Project(GameplayCamera.Direction, V.ForwardVector);
-                GameState.State.CameraDirection.X = CameraDirection.X;
-                GameState.State.CameraDirection.Y = CameraDirection.Y;
-                GameState.State.CameraDirection.Z = CameraDirection.Z;
-                Vector3 Velocity = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector));
-                GameState.State.Velocity.X = Velocity.X;
-                GameState.State.Velocity.Y = Velocity.Y;
-                GameState.State.Velocity.Z = Velocity.Z;
 
-                GameState.State.Damage = (uint) (V.HasCollided ? 1 : 0);
+            Vector3 CameraDirection = Vector3.Project(GameplayCamera.Direction, V.ForwardVector);
+            GameState.State.CameraDirection.X = CameraDirection.X;
+            GameState.State.CameraDirection.Y = CameraDirection.Y;
+            GameState.State.CameraDirection.Z = CameraDirection.Z;
 
-                GameState.Put(GameState.State);
+            Vector3 Velocity = Vector3.Project(V.Velocity, Vector3.Project(GameplayCamera.Direction, V.ForwardVector));
+            GameState.State.Velocity.X = Velocity.X;
+            GameState.State.Velocity.Y = Velocity.Y;
+            GameState.State.Velocity.Z = Velocity.Z;
 
-                while (flags.GetFlag((int)FLAGS.GAME_STATE_WRITTEN) && flags.GetFlag((int)FLAGS.IS_TRAINING)) ;
-            }
-            else
-            {
-                Reset();
-                //Yield();
-                Wait(10);
-            }
+            GameState.State.Damage = (uint)(V.HasCollided ? 1 : 0);
+            GameState.Put(GameState.State);
+
+            Flags.SetFlag(FLAGS.REQUEST_GAME_STATE, false);
+
+        }
+
+        else if (V != null)
+        {
+            Reset();
+            Wait(10);
         }
     }
 

@@ -19,7 +19,6 @@ from msgs_pb2 import ControllerState
 from google.protobuf.message import Message
 from collections import namedtuple
 from typing import Iterable, TypeVarTuple, TypeAlias
-from controller import VirtualController
 from ipc import GameState, VirtualControllerState, PhysicalControllerState, FLAGS
 from struct import unpack
 
@@ -118,27 +117,47 @@ class VideoState:
 
     def __init__(self, queue_length=100, depth=True):
         self.depth = depth
-        cudaArrayInfo = mmap.mmap(-1, 64 + 32, "CudaD3D11TextureArray1")
-        memhandle = cudaArrayInfo.read(64)
-        components, bpp, pitch, height = unpack("@4P", cudaArrayInfo.readline())
-        arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memhandle)
-        membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=self, device_id=0)
-        self.cuda_array = cupy.ndarray(shape=(components, height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
+        self.cuda_array = None
 
-    def linearize_depth(array, far=10000, C=0.001):
-        return (torch.pow(C*far+1,array)-1) / C
+    def init_cuda_array(idx=1):
+        from ipc import Channel
+        array_handle = Channel(64, f"CudaArray{idx}")
+        array_format = Channel(32, f"CudaArray{idx}Info")
+        memory_handle = array_handle.pop_nbl()
+        components, bpp, pitch, height = unpack("@4P", array_format.pop_nbl())
+        if components != 0:
+            arrayPtr = cupy.cuda.runtime.ipcOpenMemHandle(memory_handle)
+            membuffer = cupy.cuda.UnownedMemory(arrayPtr, pitch * height, owner=VideoState, device_id=0)
+            return cupy.ndarray(shape=(components, height, pitch // bpp), dtype=cupy.float32, memptr=cupy.cuda.MemoryPointer(membuffer, 0))
+        return None
+
+    # def linearize_depth(array, C=1.0, far=10000):
+    #     return (torch.pow(C*far+1,array)-1) / C
+
+    def linearize_depth(array, near, far):
+        y = (torch.pow(far/near,array)-1) * (near / far)
+        # return y * 128
+        return ((y * near) / far)
     
     def pop(self) -> torch.Tensor:
-        tensor = torch.from_dlpack(self.cuda_array).unsqueeze(0)
+        if self.cuda_array is None:
+            self.cuda_array = VideoState.init_cuda_array(idx=1)
+            if self.cuda_array is None:
+                print("Something went wrong initializing VideoState")
+                exit()
+        tensor = torch.from_dlpack(self.cuda_array)
         if self.depth:
-            img = VideoState.linearize_depth(tensor)
+            if not hasattr(self, 'nearclipfarclip'):
+                from ipc import Channel
+                self.nearclipfarclip = Channel(8, "NearClipFarClip")
+            near, far = unpack('@2f', self.nearclipfarclip.pop_nbl())
+            img = VideoState.linearize_depth(tensor, far, near).unsqueeze(0)
         else:
             img = img[:, :, :3].permute(2, 0, 1).unsqueeze(0)
             if self.grayscale:
                 img = torchvision.transforms.functional.rgb_to_grayscale(img)
-            img = img.to(dtype=torch.float16) / 255
+            img = img.to(dtype=torch.float16)
         img = torch.nn.functional.interpolate(img, config.state_sizes['image'][1:], mode='bilinear', antialias=True)
-        # img = (255 * img).to(dtype=torch.uint8)
         return img
         
     def display(self):
@@ -219,13 +238,14 @@ class ReplayBuffer:
 class Environment:
 
     def __init__(self, queue_length=100):
+        from controller import VirtualController
         self.video_state = VideoState(queue_length=queue_length)
         self.game_state = GameState()
-        self.virtual_controller = VirtualController()
+        self.virtual_controller = VirtualController
     
     def observe(self) -> State:
-        video_state: torch.Tensor = self.video_state.pop()
         game_state: tuple = self.game_state.pop()
+        video_state: torch.Tensor = self.video_state.pop()
         game_state = (torch.tensor([x] if not isinstance(x, Iterable) else x).unsqueeze(0) for x in game_state)
         return State(video_state, *game_state)
 

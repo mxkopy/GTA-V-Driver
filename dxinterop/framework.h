@@ -23,7 +23,9 @@
 #include <driver_types.h>
 #include <wrl/client.h>
 #include "detours.h"
-#include "main.h"
+#include "scripthookv_sdk/inc/natives.h"
+#include "scripthookv_sdk/inc/main.h"
+#include "launchDebugger.h"
 
 /*extern IDXGISwapChain* swapChain;
 extern ID3D11Device* dev;

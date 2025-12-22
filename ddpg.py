@@ -57,7 +57,8 @@ class DeterministicPolicyGradient:
         n = offset
         state: State = self.environment.observe()
         final: bool = False
-        r = torch.rand(1).item()
+
+        r = (0.7 * torch.rand(1).item()) + 0.3
 
         with torch.no_grad(), torch.autocast(device_type=config.device):
             while n < steps + offset and not final:

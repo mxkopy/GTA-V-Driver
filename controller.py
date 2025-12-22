@@ -101,13 +101,28 @@ class ControllerHandler(xinput.EventHandler):
         return thread
 
 
+def initialize_output_pad():
+    print("\nInitializing virtual controller")  
+    output_pad = None
+    while output_pad is None:
+        try:
+            output_pad = vg.VX360Gamepad()
+        except Exception as e:
+            print(e)
+            sleep(1)
+    print("Virtual controller initialized")
+    return output_pad
+
 class VirtualController:
 
-    def __init__(self):
-        self.output_pad = ControllerHandler.initialize_output_pad(self)
-    
-    def update(self, action: tuple[float, float, float, float]):
-        ControllerHandler.virtual_controller_update(self, action)
+    output_pad = initialize_output_pad()
+
+    def update(action: tuple[float, float, float, float]):
+        x, y, lt, rt = action
+        VirtualController.output_pad.left_joystick_float(ControllerHandler.clamp(x), ControllerHandler.clamp(y))
+        VirtualController.output_pad.left_trigger_float(ControllerHandler.clamp(lt, min_val=0))
+        VirtualController.output_pad.right_trigger_float(ControllerHandler.clamp(rt, min_val=0))
+        VirtualController.output_pad.update()
 
 if __name__ == '__main__':
     ControllerHandler().start()

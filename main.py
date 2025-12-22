@@ -19,8 +19,13 @@ if __name__ == '__main__':
     if sys.argv[1] == 'train':
         from ddpg import DeterministicPolicyGradient
         from model import DriverActorModel, DriverCriticModel
+        from ipc import Flags, FLAGS
+        from controller import VirtualController
         actor = DriverActorModel().to(device=config.device)
         critic = DriverCriticModel().to(device=config.device)
+        print("Waiting for script to load")
+        Flags().wait_until(FLAGS.REQUEST_ACTION, True)
+        print("Script loaded")
         ddpg = DeterministicPolicyGradient(actor, critic)
         ddpg.train()
 

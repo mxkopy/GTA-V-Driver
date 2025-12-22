@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 
 namespace IPC
 {
-    enum FLAGS: int
+    public enum FLAGS: int
     {
         REQUEST_GAME_STATE,
         REQUEST_ACTION,
@@ -38,7 +38,6 @@ namespace IPC
             ipc_flags_f = MemoryMappedFile.OpenExisting(tag);
             flags = ipc_flags_f.CreateViewStream(0, size);
         }
-
         public void SetFlag(int idx, bool value)
         {
             if (value) SetFlag(idx, 1);
@@ -56,6 +55,11 @@ namespace IPC
             flags.WriteByte(updated_state);
             flags.Flush();
         }
+        public void SetFlag(FLAGS idx, bool value)
+        {
+            SetFlag((int)idx, value);
+        }
+
         public bool GetFlag(int idx)
         {
             int pos = idx / 8;
@@ -65,15 +69,25 @@ namespace IPC
             int state = flags.ReadByte();
             return (state & mask) != 0;
         }
-
+        public bool GetFlag(FLAGS idx)
+        {
+            return GetFlag((int)idx);
+        }
         public void WaitUntil(int idx, bool value, Action fn)
         {
             while (GetFlag(idx) != value) fn();
         }
-
+        public void WaitUntil(FLAGS idx, bool value, Action fn)
+        {
+            WaitUntil((int)idx, value, fn);
+        }
         public void WaitUntil(int idx, bool value)
         {
             WaitUntil(idx, value, () => { });
+        }
+        public void WaitUntil(FLAGS idx, bool value)
+        {
+            WaitUntil((int)idx, value);
         }
 
         public void WaitUntil(IEnumerable<int> idxs, IEnumerable<bool> values, Action fn)
@@ -81,10 +95,17 @@ namespace IPC
             while (idxs.Zip(values, (idx, value) => GetFlag(idx) == value).All(x => x))
                 fn();
         }
-
+        public void WaitUntil(IEnumerable<FLAGS> idxs, IEnumerable<bool> values, Action fn)
+        {
+            WaitUntil(idxs.Cast<int>(), values, fn);
+        }
         public void WaitUntil(IEnumerable<int> idxs, IEnumerable<bool> values)
         {
             WaitUntil(idxs, values, () => { });
+        }
+        public void WaitUntil(IEnumerable<FLAGS> idxs, IEnumerable<bool> values)
+        {
+            WaitUntil(idxs.Cast<int>(), values);
         }
     }
 
@@ -165,9 +186,9 @@ namespace IPC
         }
         public void Put(Messages.GameState state)
         {
-            flags.WaitUntil((int) FLAGS.REQUEST_GAME_STATE, true);
+            flags.WaitUntil(FLAGS.REQUEST_GAME_STATE, true);
             PushNbl(state);
-            flags.SetFlag((int)FLAGS.GAME_STATE_WRITTEN, true);
+            flags.SetFlag(FLAGS.GAME_STATE_WRITTEN, true);
         }
     }
 }
