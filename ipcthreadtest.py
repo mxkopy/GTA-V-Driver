@@ -8,7 +8,6 @@ import sys
 from ddpg import DeterministicPolicyGradient
 from collections.abc import Callable, Buffer
 from ipc import GameState, PhysicalControllerState, VirtualControllerState, FLAGS
-from controller import ControllerHandler
 
 LOG_FILE = 'thread_execution_order_test.log'
 
@@ -55,14 +54,6 @@ def faux_game_thread():
                     file.flush()
                 pause_msg = True
 
-def physical_controller_thread():
-    controller = ControllerHandler()
-    controller.physical_controller_update_thread(exit=False)
-
-def virtual_controller_thread():
-    controller = ControllerHandler()
-    controller.virtual_controller_update_thread()
-    
 
 
 if __name__ == '__main__':

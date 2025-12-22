@@ -5,4 +5,4 @@ vs = VideoState()
 
 while True:
     keypress = cv2.waitKey(1)
-    cv2.imshow("Test", vs.pop().squeeze().cpu().numpy())
+    cv2.imshow("Test", (vs.pop() * 255).squeeze().cpu().numpy())
